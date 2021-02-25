@@ -200,12 +200,11 @@ func (nmagentclient *NMAgentClient) GetNcVersionListWithOutToken(ncNeedUpdateLis
 
 	var nmaNcListResponse NMANetworkContainerListResponse
 	rBytes, _ := ioutil.ReadAll(response.Body)
-	logger.Printf("Response body is %v", rBytes)
-	json.Unmarshal(rBytes, &nmaNcListResponse)
-	if nmaNcListResponse.ResponseCode != strconv.Itoa(http.StatusOK) {
-		logger.Printf("[NMAgentClient][Response] GetNcVersionListWithOutToken unmarshal failed with %s", rBytes)
+	if retrievenmaNcListErr := json.Unmarshal(rBytes, &nmaNcListResponse); retrievenmaNcListErr != nil {
+		logger.Printf("[NMAgentClient][Response] GetNcVersionListWithOutToken unmarshal failed with %s", retrievenmaNcListErr)
 		return nil
 	}
+	logger.Printf("NMAgent NC List Response is %s", nmaNcListResponse)
 
 	var receivedNcVersionListInMap = make(map[string]string)
 	for _, containers := range nmaNcListResponse.Containers {
