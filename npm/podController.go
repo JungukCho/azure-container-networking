@@ -5,6 +5,7 @@ package npm
 import (
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/Azure/azure-container-networking/log"
 	"github.com/Azure/azure-container-networking/npm/ipsm"
@@ -13,8 +14,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	coreinformer "k8s.io/client-go/informers/core/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
+
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
 type NpmPod struct {
@@ -165,8 +175,204 @@ func GetPodKey(podObj *corev1.Pod) string {
 	return util.GetNSNameWithPrefix(podKey)
 }
 
-// AddPod handles adding pod ip to its label's ipset.
-func (npMgr *NetworkPolicyManager) AddPod(podObj *corev1.Pod) error {
+type podController struct {
+	clientset       *kubernetes.Clientset
+	podLister       corelisters.PodLister
+	podListerSynced cache.InformerSynced
+	workqueue       workqueue.RateLimitingInterface
+	podCache        map[string]*v1.Pod
+	// TODO: change name to npmSharedCache
+	npMgr *NetworkPolicyManager
+}
+
+func NewPodController(podInformer coreinformer.PodInformer, clientset *kubernetes.Clientset, npMgr *NetworkPolicyManager) *podController {
+	podController := &podController{
+		clientset:       clientset,
+		podLister:       podInformer.Lister(),
+		podListerSynced: podInformer.Informer().HasSynced,
+		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Pods"),
+		npMgr:           npMgr,
+	}
+
+	podInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    podController.addPod,
+			UpdateFunc: podController.updatePod,
+			DeleteFunc: podController.deletePod,
+		},
+	)
+	return podController
+}
+
+func (c *podController) addPod(obj interface{}) {
+	// TODO
+	// 1. To filter out invalid pod - bring checking code from syncAddedPod() function
+	// 2. Add the pod into local cache (c.podCache) to use it later
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	// If the pod is ready to install ipset, put podKey into workqueue.
+	c.workqueue.Add(key)
+}
+
+func (c *podController) updatePod(old, cur interface{}) {
+	// TODO
+	// 1. To filter out invalid pod - bring checking code from syncUpdatePod() function
+	// 2. Add the pod into local cache (c.podCache) to use it later
+
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(cur); err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	// If the pod is ready to install ipset, put podKey into workqueue.
+	c.workqueue.Add(key)
+}
+
+func (c *podController) deletePod(obj interface{}) {
+	// TODO
+	// 1. To filter out invalid pod - bring checking code from cleanUpDeletedPod() function
+	// 2. Add the pod into local cache (c.podCache) to use it later
+
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	// If the pod is ready to install ipset, put podKey into workqueue.
+	c.workqueue.Add(key)
+}
+
+func (c *podController) Run(threadiness int, stopCh <-chan struct{}) error {
+	defer utilruntime.HandleCrash()
+	defer c.workqueue.ShutDown()
+
+	// Start the informer factories to begin populating the informer caches
+	log.Logf("Starting Pod controlle\n")
+
+	// log.Logf("Waiting for informer caches to sync")
+	// Junguk - sync all resources in npm together
+	// if ok := cache.WaitForCacheSync(stopCh, c.podListerSynced); !ok {
+	// 	return fmt.Errorf("failed to wait for caches to sync")
+	// }
+
+	log.Logf("Starting workers")
+	// Launch two workers to process Pod resources
+	for i := 0; i < threadiness; i++ {
+		go wait.Until(c.runWorker, time.Second, stopCh)
+	}
+
+	log.Logf("Started workers")
+	<-stopCh
+	log.Logf("Shutting down workers")
+
+	return nil
+}
+
+func (c *podController) runWorker() {
+	for c.processNextWorkItem() {
+	}
+}
+
+func (c *podController) processNextWorkItem() bool {
+	obj, shutdown := c.workqueue.Get()
+
+	if shutdown {
+		return false
+	}
+
+	err := func(obj interface{}) error {
+		defer c.workqueue.Done(obj)
+		var key string
+		var ok bool
+		if key, ok = obj.(string); !ok {
+			// As the item in the workqueue is actually invalid, we call
+			// Forget here else we'd go into a loop of attempting to
+			// process a work item that is invalid.
+			c.workqueue.Forget(obj)
+			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
+			return nil
+		}
+		// Run the syncHandler, passing it the namespace/name string of the
+		// Pod resource to be synced.
+
+		// TODO : can consider using "c.queue.AddAfter(key, *requeueAfter)" according to error type
+		if err := c.syncHandler(key); err != nil {
+			// Put the item back on the workqueue to handle any transient errors.
+			c.workqueue.AddRateLimited(key)
+			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
+		}
+		// Finally, if no error occurs we Forget this item so it does not
+		// get queued again until another change happens.
+		c.workqueue.Forget(obj)
+		log.Logf("Successfully synced '%s'", key)
+		return nil
+	}(obj)
+
+	if err != nil {
+		utilruntime.HandleError(err)
+		return true
+	}
+
+	return true
+}
+
+// syncHandler compares the actual state with the desired, and attempts to
+// converge the two.
+func (c *podController) syncHandler(key string) error {
+	// Convert the namespace/name string into a distinct namespace and name
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
+		return nil
+	}
+
+	// Get the Pod resource with this namespace/name
+	pod, err := c.podLister.Pods(namespace).Get(name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			utilruntime.HandleError(fmt.Errorf("pod '%s' in work queue no longer exists", key))
+			// find the pod object from a local cache and start cleaning up process (calling cleanUpDeletedPod function)
+			cachedPod, found := c.podCache[key]
+			if found {
+				err = c.cleanUpDeletedPod(cachedPod)
+				if err != nil {
+					// cleaning process was failed, need to requeue and retry later.
+					return fmt.Errorf("Cannot delete ipset due to %s\n", err.Error())
+				}
+				delete(c.podCache, key)
+			}
+			// for other transient apiserver error requeue with exponential backoff
+			return err
+		}
+	}
+
+	// TODO: do action for create and update events
+	// install ipset, update, and delete ipset
+	err = c.syncPod(pod)
+
+	// TODO
+	// 1. deal with error code and retry this
+	if err != nil {
+		return fmt.Errorf("Failed to sync pod due to  %s\n", err.Error())
+	}
+
+	return nil
+}
+
+// logic for resync pod (e.g., install ipset)
+func (c *podController) syncPod(podObj *corev1.Pod) error {
+
+	return nil
+}
+
+// syncAddedPod handles adding pod ip to its label's ipset.
+func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	if !isValidPod(podObj) {
 		return nil
 	}
@@ -199,7 +405,7 @@ func (npMgr *NetworkPolicyManager) AddPod(podObj *corev1.Pod) error {
 		podLabels         = npmPodObj.Labels
 		podIP             = npmPodObj.PodIP
 		podContainerPorts = npmPodObj.ContainerPorts
-		ipsMgr            = npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+		ipsMgr            = c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 	)
 
 	log.Logf("POD CREATING: [%s%s/%s/%s%+v%s]", podUID, podNs, podName, podNodeName, podLabels, podIP)
@@ -211,8 +417,8 @@ func (npMgr *NetworkPolicyManager) AddPod(podObj *corev1.Pod) error {
 	}
 
 	// Add pod namespace if it doesn't exist
-	if _, exists := npMgr.NsMap[podNs]; !exists {
-		npMgr.NsMap[podNs], err = newNs(podNs)
+	if _, exists := c.npMgr.NsMap[podNs]; !exists {
+		c.npMgr.NsMap[podNs], err = newNs(podNs)
 		if err != nil {
 			metrics.SendErrorLogAndMetric(util.PodID, "[AddPod] Error: failed to create namespace %s with err: %v", podNs, err)
 		}
@@ -248,13 +454,13 @@ func (npMgr *NetworkPolicyManager) AddPod(podObj *corev1.Pod) error {
 	}
 
 	// add the Pod info to the podMap
-	npMgr.PodMap[podKey] = npmPodObj
+	c.npMgr.PodMap[podKey] = npmPodObj
 
 	return nil
 }
 
 // UpdatePod handles updating pod ip in its label's ipset.
-func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
+func (c *podController) syncUpdatePod(newPodObj *corev1.Pod) error {
 	if !isValidPod(newPodObj) {
 		return nil
 	}
@@ -277,7 +483,7 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 		newPodObjLabel = newPodObj.ObjectMeta.Labels
 		newPodObjPhase = newPodObj.Status.Phase
 		newPodObjIP    = newPodObj.Status.PodIP
-		ipsMgr         = npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+		ipsMgr         = c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 	)
 
 	if podKey == "" {
@@ -287,8 +493,8 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 	}
 
 	// Add pod namespace if it doesn't exist
-	if _, exists := npMgr.NsMap[newPodObjNs]; !exists {
-		npMgr.NsMap[newPodObjNs], err = newNs(newPodObjNs)
+	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
+		c.npMgr.NsMap[newPodObjNs], err = newNs(newPodObjNs)
 		if err != nil {
 			metrics.SendErrorLogAndMetric(util.PodID, "[UpdatePod] Error: failed to create namespace %s with err: %v", newPodObjNs, err)
 		}
@@ -298,9 +504,10 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 		}
 	}
 
-	cachedPodObj, exists := npMgr.PodMap[podKey]
+	cachedPodObj, exists := c.npMgr.PodMap[podKey]
 	if !exists {
-		if addErr := npMgr.AddPod(newPodObj); addErr != nil {
+		if addErr := c.syncAddedPod(newPodObj); addErr != nil {
+			//if addErr := c.npMgr.AddPod(newPodObj); addErr != nil {
 			metrics.SendErrorLogAndMetric(util.PodID, "[UpdatePod] Error: failed to add pod during update with error %+v", addErr)
 		}
 		return nil
@@ -326,7 +533,7 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 
 	// We are assuming that FAILED to RUNNING pod will send an update
 	if newPodObj.Status.Phase == v1.PodSucceeded || newPodObj.Status.Phase == v1.PodFailed {
-		if delErr := npMgr.DeletePod(newPodObj); delErr != nil {
+		if delErr := c.cleanUpDeletedPod(newPodObj); delErr != nil {
 			metrics.SendErrorLogAndMetric(util.PodID, "[UpdatePod] Error: failed to add pod during update with error %+v", delErr)
 		}
 
@@ -419,7 +626,7 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 	}
 
 	// Updating pod cache with new information
-	npMgr.PodMap[podKey], err = newNpmPod(newPodObj)
+	c.npMgr.PodMap[podKey], err = newNpmPod(newPodObj)
 	if err != nil {
 		return err
 	}
@@ -428,7 +635,7 @@ func (npMgr *NetworkPolicyManager) UpdatePod(newPodObj *corev1.Pod) error {
 }
 
 // DeletePod handles deleting pod from its label's ipset.
-func (npMgr *NetworkPolicyManager) DeletePod(podObj *corev1.Pod) error {
+func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
 	if isHostNetworkPod(podObj) {
 		return nil
 	}
@@ -439,7 +646,7 @@ func (npMgr *NetworkPolicyManager) DeletePod(podObj *corev1.Pod) error {
 		podKey      = GetPodKey(podObj)
 		podName     = podObj.ObjectMeta.Name
 		podNodeName = podObj.Spec.NodeName
-		ipsMgr      = npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+		ipsMgr      = c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 		podUID      = string(podObj.ObjectMeta.UID)
 	)
 
@@ -449,7 +656,7 @@ func (npMgr *NetworkPolicyManager) DeletePod(podObj *corev1.Pod) error {
 		return err
 	}
 
-	cachedPodObj, podExists := npMgr.PodMap[podKey]
+	cachedPodObj, podExists := c.npMgr.PodMap[podKey]
 	if !podExists {
 		return nil
 	}
@@ -491,7 +698,7 @@ func (npMgr *NetworkPolicyManager) DeletePod(podObj *corev1.Pod) error {
 		metrics.SendErrorLogAndMetric(util.PodID, "[DeletePod] Error: failed to delete pod from namespace ipset with err: %v", err)
 	}
 
-	delete(npMgr.PodMap, podKey)
+	delete(c.npMgr.PodMap, podKey)
 
 	return nil
 }
