@@ -226,8 +226,10 @@ func (c *podController) needSync(obj interface{}) (string, bool) {
 }
 
 func (c *podController) addPod(obj interface{}) {
+	log.Logf("[POD ADD EVENT]")
 	key, needSync := c.needSync(obj)
 	if !needSync {
+		log.Logf("[POD ADD EVENT] No need to sync this pod")
 		return
 	}
 	// K8s categorizes Succeeded abd Failed pods be terminated and will not restart them
@@ -240,14 +242,17 @@ func (c *podController) addPod(obj interface{}) {
 }
 
 func (c *podController) updatePod(old, new interface{}) {
+	log.Logf("[POD UPDATE EVENT]")
 	key, needSync := c.needSync(new)
 	if !needSync {
+		log.Logf("[POD UPDATE EVENT] No need to sync this pod")
 		return
 	}
 	c.workqueue.Add(key)
 }
 
 func (c *podController) deletePod(obj interface{}) {
+	log.Logf("[POD DELETE EVENT]")
 	podObj, ok := obj.(*corev1.Pod)
 	// DeleteFunc gets the final state of the resource (if it is known).
 	// Otherwise, it gets an object of type DeletedFinalStateUnknown.
@@ -409,11 +414,10 @@ func (c *podController) syncPod(key string) error {
 func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	// TODO: Any chance to return error?
 	npmPodObj, _ := newNpmPod(podObj)
-
 	podKey, _ := cache.MetaNamespaceKeyFunc(podObj)
 	var (
 		err               error
-		podNs             = podObj.Namespace
+		podNs             = util.GetNSNameWithPrefix(podObj.Namespace)
 		podUID            = npmPodObj.PodUID
 		podName           = npmPodObj.Name
 		podNodeName       = npmPodObj.NodeName
@@ -472,6 +476,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 
 // UpdatePod handles updating pod ip in its label's ipset.
 func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
+	log.Logf("[syncAddAndUpdatePod]")
 	podKey, _ := cache.MetaNamespaceKeyFunc(newPodObj)
 
 	var (
@@ -623,6 +628,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 
 // DeletePod handles deleting pod from its label's ipset.
 func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
+	log.Logf("[cleanUpDeletedPod]")
 	podNs := util.GetNSNameWithPrefix(podObj.Namespace)
 	podKey, _ := cache.MetaNamespaceKeyFunc(podObj)
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
