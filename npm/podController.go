@@ -398,9 +398,8 @@ func (c *podController) syncPod(key string) error {
 					return fmt.Errorf("Cannot delete ipset due to %s\n", err.Error())
 				}
 			}
-			// for other transient apiserver error requeue with exponential backoff
-			return err
 		}
+		return err
 	}
 
 	err = c.syncAddAndUpdatePod(pod)
