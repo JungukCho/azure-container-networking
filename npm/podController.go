@@ -193,7 +193,7 @@ func NewPodController(podInformer coreinformer.PodInformer, clientset *kubernete
 }
 
 // filter this event if we do not need to handle this event
-func (c *podController) needSync(obj interface{}) (string, bool) {
+func (c *podController) needSync(eventType string, obj interface{}) (string, bool) {
 	needSync := false
 	var key string
 
@@ -203,20 +203,22 @@ func (c *podController) needSync(obj interface{}) (string, bool) {
 		return key, needSync
 	}
 
+	log.Logf("[POD %s EVENT for %s in %s", eventType, podObj.Name, podObj.Namespace)
+
 	if !isValidPod(podObj) {
 		return key, needSync
 	}
 
 	// Ignore adding the HostNetwork pod to any ipsets.
 	if isHostNetworkPod(podObj) {
-		log.Logf("HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]", podObj.GetObjectMeta().GetUID(), podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
+		log.Logf("[POD %s EVENT] HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]", eventType, podObj.GetObjectMeta().GetUID(), podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
 		return key, needSync
 	}
 
 	var err error
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
-		err = fmt.Errorf("[AddPod] Error: podKey is empty for %s pod in %s with UID %s", podObj.Name, util.GetNSNameWithPrefix(podObj.Namespace), podObj.UID)
+		err = fmt.Errorf("[POD %s EVENT] Error: podKey is empty for %s pod in %s with UID %s", eventType, podObj.Name, util.GetNSNameWithPrefix(podObj.Namespace), podObj.UID)
 		metrics.SendErrorLogAndMetric(util.PodID, err.Error())
 		return key, needSync
 	}
@@ -226,8 +228,7 @@ func (c *podController) needSync(obj interface{}) (string, bool) {
 }
 
 func (c *podController) addPod(obj interface{}) {
-	log.Logf("[POD ADD EVENT]")
-	key, needSync := c.needSync(obj)
+	key, needSync := c.needSync("ADD", obj)
 	if !needSync {
 		log.Logf("[POD ADD EVENT] No need to sync this pod")
 		return
@@ -242,8 +243,7 @@ func (c *podController) addPod(obj interface{}) {
 }
 
 func (c *podController) updatePod(old, new interface{}) {
-	log.Logf("[POD UPDATE EVENT]")
-	key, needSync := c.needSync(new)
+	key, needSync := c.needSync("UPDATE", new)
 	if !needSync {
 		log.Logf("[POD UPDATE EVENT] No need to sync this pod")
 		return
@@ -252,7 +252,6 @@ func (c *podController) updatePod(old, new interface{}) {
 }
 
 func (c *podController) deletePod(obj interface{}) {
-	log.Logf("[POD DELETE EVENT]")
 	podObj, ok := obj.(*corev1.Pod)
 	// DeleteFunc gets the final state of the resource (if it is known).
 	// Otherwise, it gets an object of type DeletedFinalStateUnknown.
@@ -270,6 +269,8 @@ func (c *podController) deletePod(obj interface{}) {
 			return
 		}
 	}
+
+	log.Logf("[POD DELETE EVENT for %s in %s", podObj.Name, podObj.Namespace)
 
 	if isHostNetworkPod(podObj) {
 		return
@@ -307,17 +308,17 @@ func (c *podController) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer c.workqueue.ShutDown()
 
 	// Start the informer factories to begin populating the informer caches
-	log.Logf("Starting Pod controlle\n")
+	log.Logf("Starting Pod controller\n")
 
-	log.Logf("Starting workers")
+	log.Logf("Starting Pod workers")
 	// Launch two workers to process Pod resources
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	log.Logf("Started workers")
+	log.Logf("Started Pod workers")
 	<-stopCh
-	log.Logf("Shutting down workers")
+	log.Logf("Shutting down Pod workers")
 
 	return nil
 }
