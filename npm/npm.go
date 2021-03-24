@@ -50,7 +50,9 @@ type NetworkPolicyManager struct {
 	podController   *podController
 
 	nsInformer coreinformers.NamespaceInformer
-	npInformer networkinginformers.NetworkPolicyInformer
+
+	npInformer       networkinginformers.NetworkPolicyInformer
+	netPolController *netPolController
 
 	NodeName                     string
 	NsMap                        map[string]*Namespace
@@ -187,10 +189,13 @@ func (npMgr *NetworkPolicyManager) Start(stopCh <-chan struct{}) error {
 		return fmt.Errorf("Network policy informer failed to sync")
 	}
 
-	// TODO: any dependency among below functions?
-
+	// Question: any dependency among below functions?
 	// start pod controller after synced
 	go npMgr.podController.Run(threadness, stopCh)
+
+	// start network policy controller after synced
+	go npMgr.netPolController.Run(threadness, stopCh)
+
 	go npMgr.reconcileChains()
 	go npMgr.backup()
 
@@ -268,6 +273,9 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 	// create pod controller
 	npMgr.podController = NewPodController(informerFactory.Core().V1().Pods(), clientset, npMgr)
 
+	// create network controller
+	npMgr.netPolController = NewNetPolController(informerFactory.Networking().V1().NetworkPolicies(), clientset, npMgr)
+
 	nsInformer.Informer().AddEventHandler(
 		// Namespace event handlers
 		cache.ResourceEventHandlerFuncs{
@@ -311,54 +319,6 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 				}
 				npMgr.Lock()
 				npMgr.DeleteNamespace(nameSpaceObj)
-				npMgr.Unlock()
-			},
-		},
-	)
-
-	npInformer.Informer().AddEventHandler(
-		// Network policy event handlers
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				networkPolicyObj, ok := obj.(*networkingv1.NetworkPolicy)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "ADD Network Policy: Received unexpected object type: %v", obj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.AddNetworkPolicy(networkPolicyObj)
-				npMgr.Unlock()
-			},
-			UpdateFunc: func(old, new interface{}) {
-				oldNetworkPolicyObj, ok := old.(*networkingv1.NetworkPolicy)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE Network Policy: Received unexpected old object type: %v", oldNetworkPolicyObj)
-					return
-				}
-				newNetworkPolicyObj, ok := new.(*networkingv1.NetworkPolicy)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE Network Policy: Received unexpected new object type: %v", newNetworkPolicyObj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.UpdateNetworkPolicy(oldNetworkPolicyObj, newNetworkPolicyObj)
-				npMgr.Unlock()
-			},
-			DeleteFunc: func(obj interface{}) {
-				networkPolicyObj, ok := obj.(*networkingv1.NetworkPolicy)
-				if !ok {
-					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-					if !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Network Policy: Received unexpected object type: %v", obj)
-						return
-					}
-					if networkPolicyObj, ok = tombstone.Obj.(*networkingv1.NetworkPolicy); !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Network Policy: Received unexpected object type: %v", obj)
-						return
-					}
-				}
-				npMgr.Lock()
-				npMgr.DeleteNetworkPolicy(networkPolicyObj)
 				npMgr.Unlock()
 			},
 		},
