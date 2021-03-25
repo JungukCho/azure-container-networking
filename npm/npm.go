@@ -16,7 +16,6 @@ import (
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 	"github.com/Azure/azure-container-networking/telemetry"
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/version"
@@ -49,7 +48,9 @@ type NetworkPolicyManager struct {
 	podInformer     coreinformers.PodInformer
 	podController   *podController
 
-	nsInformer coreinformers.NamespaceInformer
+	nsInformer          coreinformers.NamespaceInformer
+	nameSpaceController *nameSpaceController
+
 	npInformer networkinginformers.NetworkPolicyInformer
 
 	NodeName                     string
@@ -266,55 +267,58 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 	}
 
 	// create pod controller
-	npMgr.podController = NewPodController(informerFactory.Core().V1().Pods(), clientset, npMgr)
+	npMgr.podController = NewPodController(podInformer, clientset, npMgr)
 
-	nsInformer.Informer().AddEventHandler(
-		// Namespace event handlers
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				nameSpaceObj, ok := obj.(*corev1.Namespace)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "ADD NameSpace: Received unexpected object type: %v", obj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.AddNamespace(nameSpaceObj)
-				npMgr.Unlock()
-			},
-			UpdateFunc: func(old, new interface{}) {
-				oldNameSpaceObj, ok := old.(*corev1.Namespace)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE NameSpace: Received unexpected old object type: %v", oldNameSpaceObj)
-					return
-				}
-				newNameSpaceObj, ok := new.(*corev1.Namespace)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE NameSpace: Received unexpected new object type: %v", newNameSpaceObj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.UpdateNamespace(oldNameSpaceObj, newNameSpaceObj)
-				npMgr.Unlock()
-			},
-			DeleteFunc: func(obj interface{}) {
-				nameSpaceObj, ok := obj.(*corev1.Namespace)
-				if !ok {
-					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-					if !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE NameSpace: Received unexpected object type: %v", obj)
-						return
-					}
-					if nameSpaceObj, ok = tombstone.Obj.(*corev1.Namespace); !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE NameSpace: Received unexpected object type: %v", obj)
-						return
-					}
-				}
-				npMgr.Lock()
-				npMgr.DeleteNamespace(nameSpaceObj)
-				npMgr.Unlock()
-			},
-		},
-	)
+	// create NameSpace controller
+	npMgr.nameSpaceController = NewNameSpaceController(nsInformer, clientset, npMgr)
+
+	// nsInformer.Informer().AddEventHandler(
+	// 	// Namespace event handlers
+	// 	cache.ResourceEventHandlerFuncs{
+	// 		AddFunc: func(obj interface{}) {
+	// 			nameSpaceObj, ok := obj.(*corev1.Namespace)
+	// 			if !ok {
+	// 				metrics.SendErrorLogAndMetric(util.NpmID, "ADD NameSpace: Received unexpected object type: %v", obj)
+	// 				return
+	// 			}
+	// 			npMgr.Lock()
+	// 			npMgr.AddNamespace(nameSpaceObj)
+	// 			npMgr.Unlock()
+	// 		},
+	// 		UpdateFunc: func(old, new interface{}) {
+	// 			oldNameSpaceObj, ok := old.(*corev1.Namespace)
+	// 			if !ok {
+	// 				metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE NameSpace: Received unexpected old object type: %v", oldNameSpaceObj)
+	// 				return
+	// 			}
+	// 			newNameSpaceObj, ok := new.(*corev1.Namespace)
+	// 			if !ok {
+	// 				metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE NameSpace: Received unexpected new object type: %v", newNameSpaceObj)
+	// 				return
+	// 			}
+	// 			npMgr.Lock()
+	// 			npMgr.UpdateNamespace(oldNameSpaceObj, newNameSpaceObj)
+	// 			npMgr.Unlock()
+	// 		},
+	// 		DeleteFunc: func(obj interface{}) {
+	// 			nameSpaceObj, ok := obj.(*corev1.Namespace)
+	// 			if !ok {
+	// 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+	// 				if !ok {
+	// 					metrics.SendErrorLogAndMetric(util.NpmID, "DELETE NameSpace: Received unexpected object type: %v", obj)
+	// 					return
+	// 				}
+	// 				if nameSpaceObj, ok = tombstone.Obj.(*corev1.Namespace); !ok {
+	// 					metrics.SendErrorLogAndMetric(util.NpmID, "DELETE NameSpace: Received unexpected object type: %v", obj)
+	// 					return
+	// 				}
+	// 			}
+	// 			npMgr.Lock()
+	// 			npMgr.DeleteNamespace(nameSpaceObj)
+	// 			npMgr.Unlock()
+	// 		},
+	// 	},
+	// )
 
 	npInformer.Informer().AddEventHandler(
 		// Network policy event handlers
