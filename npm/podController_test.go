@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-container-networking/npm/ipsm"
 	"github.com/Azure/azure-container-networking/npm/util"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -36,8 +37,8 @@ type podFixture struct {
 	kubeobjects []runtime.Object
 
 	// (TODO) will remove npMgr if possible
-	npMgr *NetworkPolicyManager
-
+	npMgr         *NetworkPolicyManager
+	ipsMgr        *ipsm.IpsetManager
 	podController *podController
 	kubeInformer  kubeinformers.SharedInformerFactory
 }
@@ -48,6 +49,7 @@ func newFixture(t *testing.T) *podFixture {
 		podLister:   []*corev1.Pod{},
 		kubeobjects: []runtime.Object{},
 		npMgr:       newNPMgr(t),
+		ipsMgr:      ipsm.NewIpsetManager(),
 	}
 	return f
 }
@@ -61,6 +63,19 @@ func (f *podFixture) newPodController() {
 
 	for _, pod := range f.podLister {
 		f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Add(pod)
+	}
+}
+
+func (f *podFixture) ipSetSave() {
+	//  call /sbin/ipset save -file /var/log/ipset-test.conf
+	if err := f.ipsMgr.Save(util.IpsetTestConfigFile); err != nil {
+		f.t.Errorf("TestAddPod failed @ ipsMgr.Save")
+	}
+}
+func (f *podFixture) ipSetRestore() {
+	//  call /sbin/ipset restore -file /var/log/ipset-test.conf
+	if err := f.ipsMgr.Restore(util.IpsetTestConfigFile); err != nil {
+		f.t.Errorf("TestAddPod failed @ ipsMgr.Restore")
 	}
 }
 
@@ -274,6 +289,9 @@ func updatePod(t *testing.T, f *podFixture, oldPodObj *corev1.Pod, newPodObj *co
 
 func TestAddPod(t *testing.T) {
 	f := newFixture(t)
+	f.ipSetSave()
+	defer f.ipSetRestore()
+
 	podObj := createPod()
 	podObj.Spec.HostNetwork = false
 	addPod(t, f, podObj)
@@ -281,6 +299,9 @@ func TestAddPod(t *testing.T) {
 
 func TestAddHostNetworkPod(t *testing.T) {
 	f := newFixture(t)
+	f.ipSetSave()
+	defer f.ipSetRestore()
+
 	podObj := createPod()
 	podObj.Spec.HostNetwork = true
 	addPod(t, f, podObj)
@@ -288,6 +309,9 @@ func TestAddHostNetworkPod(t *testing.T) {
 
 func TestDeletePod(t *testing.T) {
 	f := newFixture(t)
+	f.ipSetSave()
+	defer f.ipSetRestore()
+
 	podObj := createPod()
 	podObj.Spec.HostNetwork = false
 	deletePod(t, f, podObj)
@@ -295,6 +319,9 @@ func TestDeletePod(t *testing.T) {
 
 func TestDeleteHostNetworkPod(t *testing.T) {
 	f := newFixture(t)
+	f.ipSetSave()
+	defer f.ipSetRestore()
+
 	podObj := createPod()
 	podObj.Spec.HostNetwork = true
 	deletePod(t, f, podObj)
@@ -303,6 +330,9 @@ func TestDeleteHostNetworkPod(t *testing.T) {
 // need to clean up
 func TestUpdatePod(t *testing.T) {
 	f := newFixture(t)
+	f.ipSetSave()
+	defer f.ipSetRestore()
+
 	oldRV := "0"
 	newRV := "1"
 	isHostNetwork := false
