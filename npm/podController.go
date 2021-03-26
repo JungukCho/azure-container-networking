@@ -97,8 +97,8 @@ func isHostNetworkPod(podObj *corev1.Pod) bool {
 	return podObj.Spec.HostNetwork
 }
 
-func isInvalidPodUpdate(oldPodObj, newPodObj *corev1.Pod) (isInvalidUpdate bool) {
-	isInvalidUpdate = oldPodObj.ObjectMeta.Namespace == newPodObj.ObjectMeta.Namespace &&
+func isInvalidPodUpdate(oldPodObj, newPodObj *corev1.Pod) bool {
+	isInvalidUpdate := oldPodObj.ObjectMeta.Namespace == newPodObj.ObjectMeta.Namespace &&
 		oldPodObj.ObjectMeta.Name == newPodObj.ObjectMeta.Name &&
 		oldPodObj.Status.Phase == newPodObj.Status.Phase &&
 		oldPodObj.Status.PodIP == newPodObj.Status.PodIP &&
@@ -109,7 +109,7 @@ func isInvalidPodUpdate(oldPodObj, newPodObj *corev1.Pod) (isInvalidUpdate bool)
 		reflect.DeepEqual(oldPodObj.Status.PodIPs, newPodObj.Status.PodIPs) &&
 		reflect.DeepEqual(getContainerPortList(oldPodObj), getContainerPortList(newPodObj))
 
-	return
+	return isInvalidUpdate
 }
 
 func getContainerPortList(podObj *corev1.Pod) []v1.ContainerPort {
@@ -164,7 +164,7 @@ func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []v1.ContainerPor
 }
 
 type podController struct {
-	clientset       *kubernetes.Clientset
+	clientset       kubernetes.Interface
 	podLister       corelisters.PodLister
 	podListerSynced cache.InformerSynced
 	workqueue       workqueue.RateLimitingInterface
@@ -173,7 +173,7 @@ type podController struct {
 	npMgr *NetworkPolicyManager
 }
 
-func NewPodController(podInformer coreinformer.PodInformer, clientset *kubernetes.Clientset, npMgr *NetworkPolicyManager) *podController {
+func NewPodController(podInformer coreinformer.PodInformer, clientset kubernetes.Interface, npMgr *NetworkPolicyManager) *podController {
 	podController := &podController{
 		clientset:       clientset,
 		podLister:       podInformer.Lister(),
@@ -243,6 +243,16 @@ func (c *podController) addPod(obj interface{}) {
 }
 
 func (c *podController) updatePod(old, new interface{}) {
+	oldPod := old.(*corev1.Pod)
+	newPod := new.(*corev1.Pod)
+	if oldPod.ResourceVersion == newPod.ResourceVersion {
+		// Periodic resync will send update events for all known pods.
+		// Two different versions of the same pods will always have different RVs.
+		// will check version..
+		fmt.Println("[POD UPDATE EVENT] two pods have the same RVs")
+		return
+	}
+
 	key, needSync := c.needSync("UPDATE", new)
 	if !needSync {
 		log.Logf("[POD UPDATE EVENT] No need to sync this pod")
@@ -273,6 +283,7 @@ func (c *podController) deletePod(obj interface{}) {
 	log.Logf("[POD DELETE EVENT for %s in %s", podObj.Name, podObj.Namespace)
 
 	if isHostNetworkPod(podObj) {
+		log.Logf("[POD DELETE EVENT] HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]", podObj.UID, podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
 		return
 	}
 
@@ -335,6 +346,8 @@ func (c *podController) processNextWorkItem() bool {
 		return false
 	}
 
+	log.Logf("Length of queue %d", c.workqueue.Len())
+
 	err := func(obj interface{}) error {
 		defer c.workqueue.Done(obj)
 		var key string
@@ -387,8 +400,8 @@ func (c *podController) syncPod(key string) error {
 	defer c.npMgr.Unlock()
 	if err != nil {
 		if errors.IsNotFound(err) {
-			utilruntime.HandleError(fmt.Errorf("pod '%s' in work queue no longer exists", key))
-			// find the pod object from a local cache and start cleaning up process (calling cleanUpDeletedPod function)
+			fmt.Printf("pod %s not found, may be it is deleted\n", key)
+			// Find the pod object from a local cache and start cleaning up process (calling cleanUpDeletedPod function)
 			cachedPod, found := c.npMgr.PodMap[key]
 			if found {
 				// TODO: better to use cachedPod when calling cleanUpDeletedPod?
@@ -400,6 +413,13 @@ func (c *podController) syncPod(key string) error {
 			}
 		}
 		return err
+	}
+
+	if pod.DeletionTimestamp != nil || pod.DeletionGracePeriodSeconds != nil {
+		err = c.cleanUpDeletedPod(pod)
+		if err != nil {
+			return fmt.Errorf("Failed to clean up pod due to  %s\n", err.Error())
+		}
 	}
 
 	err = c.syncAddAndUpdatePod(pod)
@@ -506,13 +526,16 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 			metrics.SendErrorLogAndMetric(util.PodID, "[UpdatePod] Error: failed to add pod during update with error %+v", addErr)
 			return addErr
 		}
+		log.Logf("[Stop processing since it is pod creation event]")
 		return nil
 	}
 
+	// Below logic is to deal with update event
 	if isInvalidPodUpdate(getPodObjFromNpmObj(cachedPodObj), newPodObj) {
 		return nil
 	}
 
+	// TODO: does it always increase? - Unnecessary?
 	check := util.CompareUintResourceVersions(
 		cachedPodObj.ResourceVersion,
 		util.ParseResourceVersion(newPodObj.ObjectMeta.ResourceVersion),
