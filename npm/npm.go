@@ -36,6 +36,8 @@ const (
 	telemetryRetryTimeInSeconds   = 60
 	heartbeatIntervalInMinutes    = 30
 	reconcileChainTimeInMinutes   = 5
+	// TODO: consider increasing thread number later when logics are correct
+	threadness = 1
 )
 
 // NetworkPolicyManager contains informers for pod, namespace and networkpolicy.
@@ -45,8 +47,10 @@ type NetworkPolicyManager struct {
 
 	informerFactory informers.SharedInformerFactory
 	podInformer     coreinformers.PodInformer
-	nsInformer      coreinformers.NamespaceInformer
-	npInformer      networkinginformers.NetworkPolicyInformer
+	podController   *podController
+
+	nsInformer coreinformers.NamespaceInformer
+	npInformer networkinginformers.NetworkPolicyInformer
 
 	NodeName                     string
 	NsMap                        map[string]*Namespace
@@ -183,6 +187,10 @@ func (npMgr *NetworkPolicyManager) Start(stopCh <-chan struct{}) error {
 		return fmt.Errorf("Network policy informer failed to sync")
 	}
 
+	// TODO: any dependency among below functions?
+
+	// start pod controller after synced
+	go npMgr.podController.Run(threadness, stopCh)
 	go npMgr.reconcileChains()
 	go npMgr.backup()
 
@@ -257,52 +265,8 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to create ipset for namespace %s.", kubeSystemNs)
 	}
 
-	podInformer.Informer().AddEventHandler(
-		// Pod event handlers
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				podObj, ok := obj.(*corev1.Pod)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "ADD Pod: Received unexpected object type: %v", obj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.AddPod(podObj)
-				npMgr.Unlock()
-			},
-			UpdateFunc: func(_, new interface{}) {
-				newPodObj, ok := new.(*corev1.Pod)
-				if !ok {
-					metrics.SendErrorLogAndMetric(util.NpmID, "UPDATE Pod: Received unexpected new object type: %v", newPodObj)
-					return
-				}
-				npMgr.Lock()
-				npMgr.UpdatePod(newPodObj)
-				npMgr.Unlock()
-			},
-			DeleteFunc: func(obj interface{}) {
-				// DeleteFunc gets the final state of the resource (if it is known).
-				// Otherwise, it gets an object of type DeletedFinalStateUnknown.
-				// This can happen if the watch is closed and misses the delete event and
-				// the controller doesn't notice the deletion until the subsequent re-list
-				podObj, ok := obj.(*corev1.Pod)
-				if !ok {
-					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-					if !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Pod: Received unexpected object type: %v", obj)
-						return
-					}
-					if podObj, ok = tombstone.Obj.(*corev1.Pod); !ok {
-						metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Pod: Received unexpected object type: %v", obj)
-						return
-					}
-				}
-				npMgr.Lock()
-				npMgr.DeletePod(podObj)
-				npMgr.Unlock()
-			},
-		},
-	)
+	// create pod controller
+	npMgr.podController = NewPodController(informerFactory.Core().V1().Pods(), clientset, npMgr)
 
 	nsInformer.Informer().AddEventHandler(
 		// Namespace event handlers
