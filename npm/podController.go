@@ -42,7 +42,7 @@ type NpmPod struct {
 }
 
 func newNpmPod(podObj *corev1.Pod) *NpmPod {
-	// TODO: handle error?
+	// (TODO): handle error?
 	rv := util.ParseResourceVersion(podObj.GetObjectMeta().GetResourceVersion())
 	return &NpmPod{
 		Name:            podObj.ObjectMeta.Name,
@@ -60,7 +60,7 @@ func newNpmPod(podObj *corev1.Pod) *NpmPod {
 }
 
 // getPodObjFromNpmObj returns a new pod object based on NpmPod
-func (nPod *NpmPod) getPodObjFromNpmObj() *corev1.Pod {
+func (nPod *NpmPod) getPodObjFromNpmPodObj() *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      nPod.Name,
@@ -91,7 +91,7 @@ type podController struct {
 	podListerSynced cache.InformerSynced
 	workqueue       workqueue.RateLimitingInterface
 	//podCache        map[string]*v1.Pod
-	// TODO: podController does not need to have whole NetworkPolicyManager pointer. Need to improve it
+	// (TODO): podController does not need to have whole NetworkPolicyManager pointer. Need to improve it
 	npMgr *NetworkPolicyManager
 }
 
@@ -114,7 +114,7 @@ func NewPodController(podInformer coreinformer.PodInformer, clientset kubernetes
 	return podController
 }
 
-// filter this event if we do not need to handle this event
+// needSync filters the event if the event is not required to handle
 func (c *podController) needSync(eventType string, obj interface{}) (string, bool) {
 	needSync := false
 	var key string
@@ -131,17 +131,17 @@ func (c *podController) needSync(eventType string, obj interface{}) (string, boo
 		return key, needSync
 	}
 
-	// Ignore adding the HostNetwork pod to any ipsets.
 	if isHostNetworkPod(podObj) {
-		log.Logf("[POD %s EVENT] HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]", eventType, podObj.GetObjectMeta().GetUID(), podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
+		log.Logf("[POD %s EVENT] HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]",
+			eventType, podObj.GetObjectMeta().GetUID(), podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
 		return key, needSync
 	}
 
 	var err error
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
-		err = fmt.Errorf("[POD %s EVENT] Error: podKey is empty for %s pod in %s with UID %s", eventType, podObj.Name, util.GetNSNameWithPrefix(podObj.Namespace), podObj.UID)
-		metrics.SendErrorLogAndMetric(util.PodID, err.Error())
+		metrics.SendErrorLogAndMetric(util.PodID, "[POD %s EVENT] Error: podKey is empty for %s pod in %s with UID %s",
+			eventType, podObj.Name, util.GetNSNameWithPrefix(podObj.Namespace), podObj.UID)
 		return key, needSync
 	}
 
@@ -155,7 +155,7 @@ func (c *podController) addPod(obj interface{}) {
 		log.Logf("[POD ADD EVENT] No need to sync this pod")
 		return
 	}
-	// K8s categorizes Succeeded and Failed pods be terminated and will not restart them
+	// K8s categorizes Succeeded and Failed pods as a terminated pod and will not restart them
 	// So NPM will ignorer adding these pods
 	podObj, _ := obj.(*corev1.Pod)
 	if podObj.Status.Phase == v1.PodSucceeded || podObj.Status.Phase == v1.PodFailed {
@@ -167,11 +167,11 @@ func (c *podController) addPod(obj interface{}) {
 func (c *podController) updatePod(old, new interface{}) {
 	oldPod := old.(*corev1.Pod)
 	newPod := new.(*corev1.Pod)
+
 	if oldPod.ResourceVersion == newPod.ResourceVersion {
 		// Periodic resync will send update events for all known pods.
 		// Two different versions of the same pods will always have different RVs.
-		// will check version..
-		fmt.Println("[POD UPDATE EVENT] two pods have the same RVs")
+		log.Logf("[POD UPDATE EVENT] Two pods have the same RVs")
 		return
 	}
 
@@ -192,17 +192,17 @@ func (c *podController) deletePod(obj interface{}) {
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
-			metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Pod: Received unexpected object type: %v", obj)
+			metrics.SendErrorLogAndMetric(util.NpmID, "[POD DELETE EVENT] Pod: Received unexpected object type: %v", obj)
 			return
 		}
 
 		if podObj, ok = tombstone.Obj.(*corev1.Pod); !ok {
-			metrics.SendErrorLogAndMetric(util.NpmID, "DELETE Pod: Received unexpected object type (error decoding object tombstone, invalid type): %v", obj)
+			metrics.SendErrorLogAndMetric(util.NpmID, "[POD DELETE EVENT] Pod: Received unexpected object type (error decoding object tombstone, invalid type): %v", obj)
 			return
 		}
 	}
 
-	log.Logf("[POD DELETE EVENT for %s in %s", podObj.Name, podObj.Namespace)
+	log.Logf("[POD DELETE EVENT] for %s in %s", podObj.Name, podObj.Namespace)
 	if isHostNetworkPod(podObj) {
 		log.Logf("[POD DELETE EVENT] HostNetwork POD IGNORED: [%s/%s/%s/%+v%s]", podObj.UID, podObj.Namespace, podObj.Name, podObj.Labels, podObj.Status.PodIP)
 		return
@@ -212,12 +212,12 @@ func (c *podController) deletePod(obj interface{}) {
 	var key string
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
-		metrics.SendErrorLogAndMetric(util.PodID, "[DeletePod] Error: podKey is empty for %s pod in %s with UID %s",
+		metrics.SendErrorLogAndMetric(util.PodID, "[POD DELETE EVENT] Error: podKey is empty for %s pod in %s with UID %s",
 			podObj.ObjectMeta.Name, util.GetNSNameWithPrefix(podObj.Namespace), podObj.UID)
 		return
 	}
 
-	// TODO: Reduce scope of lock later
+	// (TODO): Reduce scope of lock later
 	c.npMgr.Lock()
 	defer c.npMgr.Unlock()
 
@@ -227,7 +227,7 @@ func (c *podController) deletePod(obj interface{}) {
 	}
 
 	// if the podIp exists, it must match the cachedIp
-	// (TODO) should we return this error?
+	// (TODO): when does this situation happen? Is it ok to add it to workqueue?
 	if len(podObj.Status.PodIP) > 0 && cachedNpmPodObj.PodIP != podObj.Status.PodIP {
 		metrics.SendErrorLogAndMetric(util.PodID, "[DeletePod] Info: Unexpected state. Pod (Namespace:%s, Name:%s, uid:%s, has cachedPodIp:%s which is different from PodIp:%s",
 			util.GetNSNameWithPrefix(podObj.Namespace), podObj.ObjectMeta.Name, podObj.UID, cachedNpmPodObj.PodIP, podObj.Status.PodIP)
@@ -278,7 +278,7 @@ func (c *podController) processNextWorkItem() bool {
 		}
 		// Run the syncHandler, passing it the namespace/name string of the
 		// Pod resource to be synced.
-		// TODO : may consider using "c.queue.AddAfter(key, *requeueAfter)" according to error type later
+		// (TODO): may consider using "c.queue.AddAfter(key, *requeueAfter)" according to error type later
 		if err := c.syncPod(key); err != nil {
 			// Put the item back on the workqueue to handle any transient errors.
 			c.workqueue.AddRateLimited(key)
@@ -310,21 +310,19 @@ func (c *podController) syncPod(key string) error {
 
 	// Get the Pod resource with this namespace/name
 	pod, err := c.podLister.Pods(namespace).Get(name)
-	// TODO: Reduce scope of lock later
+	// (TODO): Reduce scope of lock later
 	c.npMgr.Lock()
 	defer c.npMgr.Unlock()
 	if err != nil {
 		if errors.IsNotFound(err) {
-			fmt.Printf("pod %s not found, may be it is deleted\n", key)
-			// Find the pod object from a local cache and start cleaning up process (calling cleanUpDeletedPod function)
-			cachedPod, found := c.npMgr.PodMap[key]
-			if found {
-				// TODO: better to use cachedPod when calling cleanUpDeletedPod?
-				err = c.cleanUpDeletedPod(cachedPod.getPodObjFromNpmObj())
+			log.Logf("pod %s not found, may be it is deleted", key)
+			// Find the npmPod object from PortMap local cache and start cleaning up processes
+			cachedNpmPodObj, exist := c.npMgr.PodMap[key]
+			if exist {
+				err = c.cleanUpDeletedPod(cachedNpmPodObj.getPodObjFromNpmPodObj())
 				if err != nil {
-					metrics.SendErrorLogAndMetric(util.PodID, "Error: cannot delete ipset due to %v when pod is not found", err)
-					// cleaning process was failed, need to requeue and retry later.
-					return fmt.Errorf("Cannot delete ipset due to %s when pod is not found\n", err.Error())
+					metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when pod is not found", err)
+					return fmt.Errorf("Error: %v when pod is not found\n", err)
 				}
 			}
 		}
@@ -334,15 +332,16 @@ func (c *podController) syncPod(key string) error {
 	if pod.DeletionTimestamp != nil || pod.DeletionGracePeriodSeconds != nil {
 		err = c.cleanUpDeletedPod(pod)
 		if err != nil {
-			metrics.SendErrorLogAndMetric(util.PodID, "Error: cannot delete ipset due to %v when DeletionTimestamp or DeletionGracePeriodSeconds is not nil", err)
-			return fmt.Errorf("Failed to clean up pod due to %s when DeletionTimestamp or DeletionGracePeriodSeconds is not nil\n", err.Error())
+			metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when DeletionTimestamp or DeletionGracePeriodSeconds is not nil", err)
+			return fmt.Errorf("Error: %v when DeletionTimestamp or DeletionGracePeriodSeconds is not nil\n", err)
 		}
+		return nil
 	}
 
 	err = c.syncAddAndUpdatePod(pod)
 	if err != nil {
-		metrics.SendErrorLogAndMetric(util.PodID, "Error: Failed to sync pod due to %+v", err)
-		return fmt.Errorf("Failed to sync pod due to  %s\n", err.Error())
+		metrics.SendErrorLogAndMetric(util.PodID, "Error: Failed to sync pod due to %v", err)
+		return fmt.Errorf("Failed to sync pod due to %v\n", err)
 	}
 
 	return nil
@@ -358,7 +357,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	// Add pod namespace if it doesn't exist
 	var err error
 	if _, exists := c.npMgr.NsMap[podNs]; !exists {
-		// TODO: Any chance to return error?
+		// (TODO): Any chance to return error?
 		c.npMgr.NsMap[podNs], _ = newNs(podNs)
 		log.Logf("Creating set: %v, hashedSet: %v", podNs, util.GetHashedName(podNs))
 		if err = ipsMgr.CreateSet(podNs, append([]string{util.IpsetNetHashFlag})); err != nil {
@@ -372,17 +371,12 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 		return fmt.Errorf("[syncAddedPod] Error: failed to add pod to namespace ipset with err: %v", err)
 	}
 
-	// Add the pod to its label's ipset.
-	for podLabelKey, podLabelVal := range npmPodObj.Labels {
-		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, podLabelKey)
-		if err = ipsMgr.AddToSet(podLabelKey, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
+	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start adding them to ipsets.
+	addToIPSets := util.GetIPSetListFromLabels(npmPodObj.Labels)
+	for _, addIPSetName := range addToIPSets {
+		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, addIPSetName)
+		if err = ipsMgr.AddToSet(addIPSetName, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label ipset with err: %v", err)
-		}
-
-		label := podLabelKey + ":" + podLabelVal
-		log.Logf("Adding pod %s to ipset %s", npmPodObj.PodIP, label)
-		if err = ipsMgr.AddToSet(label, npmPodObj.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
-			return fmt.Errorf("[syncAddedPod] Error: failed to add pod to label key and label value ipset with err: %v", err)
 		}
 	}
 
@@ -407,7 +401,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	// Add pod namespace if it doesn't exist
 	var err error
 	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
-		// TODO: Any chance to return error?
+		// (TODO): Any chance to return error?
 		c.npMgr.NsMap[newPodObjNs], _ = newNs(newPodObjNs)
 		log.Logf("Creating set: %v, hashedSet: %v", newPodObjNs, util.GetHashedName(newPodObjNs))
 		if err = ipsMgr.CreateSet(newPodObjNs, append([]string{util.IpsetNetHashFlag})); err != nil {
@@ -416,6 +410,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	}
 
 	cachedNpmPodObj, exists := c.npMgr.PodMap[podKey]
+	// No cached npmPod exists, which means pod is created. "syncAddAndUpdatePod" is called due to "addPod" event
 	if !exists {
 		if err = c.syncAddedPod(newPodObj); err != nil {
 			return err
@@ -423,12 +418,12 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		return nil
 	}
 
-	// Below logic is to deal with update event
-	if isInvalidPodUpdate(cachedNpmPodObj.getPodObjFromNpmObj(), newPodObj) {
+	// Start dealing with "updatePod" event
+	if isInvalidPodUpdate(cachedNpmPodObj.getPodObjFromNpmPodObj(), newPodObj) {
 		return nil
 	}
 
-	// TODO: does it always increase? - Unnecessary?
+	// (TODO): When does this situation happen?
 	check := util.CompareUintResourceVersions(
 		cachedNpmPodObj.ResourceVersion,
 		util.ParseResourceVersion(newPodObj.ObjectMeta.ResourceVersion),
@@ -439,7 +434,6 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 			cachedNpmPodObj.Namespace, cachedNpmPodObj.Name, cachedNpmPodObj.PodIP, cachedNpmPodObj.ResourceVersion,
 			newPodObj.ObjectMeta.Namespace, newPodObj.ObjectMeta.Name, newPodObj.Status.PodIP, newPodObj.ObjectMeta.ResourceVersion,
 		)
-
 		return nil
 	}
 
@@ -466,7 +460,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		deleteFromIPSets = util.GetIPSetListFromLabels(cachedNpmPodObj.Labels)
 
 		// Assume that the pod IP will be released when pod moves to succeeded or failed state.
-		// If the pod transitions back to an active state, then add operation will re establish the updated pod info.
+		// If the pod transitions back to an active state, then add operation will re-establish the updated pod info.
 		// new PodIP needs to be added to all newLabels
 		addToIPSets = util.GetIPSetListFromLabels(newPodObj.Labels)
 
@@ -507,7 +501,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		}
 	}
 
-	// TODO optimize named port addition and deletions.
+	// (TODO): optimize named port addition and deletions.
 	// named ports are mostly static once configured in todays usage pattern
 	// so keeping this simple by deleting all and re-adding
 	newPodPorts := getContainerPortList(newPodObj)
@@ -531,28 +525,27 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
 	log.Logf("[cleanUpDeletedPod]")
 
-	podNs := util.GetNSNameWithPrefix(podObj.Namespace)
 	podKey, _ := cache.MetaNamespaceKeyFunc(podObj)
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
-	cachedNpmPodObj, _ := c.npMgr.PodMap[podKey]
+	// If cached npmPod does not exist, return nil
+	cachedNpmPodObj, exist := c.npMgr.PodMap[podKey]
+	if !exist {
+		return nil
+	}
 
+	podNs := util.GetNSNameWithPrefix(podObj.Namespace)
+	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 	var err error
 	// Delete the pod from its namespace's ipset.
 	if err = ipsMgr.DeleteFromSet(podNs, cachedNpmPodObj.PodIP, podKey); err != nil {
 		return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from namespace ipset with err: %v", err)
 	}
 
-	// Delete the pod from its label's ipset.
-	for podLabelKey, podLabelVal := range cachedNpmPodObj.Labels {
-		log.Logf("Deleting pod %s from ipset %s", cachedNpmPodObj.PodIP, podLabelKey)
-		if err = ipsMgr.DeleteFromSet(podLabelKey, cachedNpmPodObj.PodIP, podKey); err != nil {
+	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start deleting them from ipsets
+	deleteFromIPSets := util.GetIPSetListFromLabels(cachedNpmPodObj.Labels)
+	for _, podIPSetName := range deleteFromIPSets {
+		log.Logf("Deleting pod %s from ipset %s", cachedNpmPodObj.PodIP, podIPSetName)
+		if err = ipsMgr.DeleteFromSet(podIPSetName, cachedNpmPodObj.PodIP, podKey); err != nil {
 			return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from label ipset with err: %v", err)
-		}
-
-		label := podLabelKey + ":" + podLabelVal
-		log.Logf("Deleting pod %s from ipset %s", cachedNpmPodObj.PodIP, label)
-		if err = ipsMgr.DeleteFromSet(label, cachedNpmPodObj.PodIP, podKey); err != nil {
-			return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from label key and label value ipset with err: %v", err)
 		}
 	}
 
@@ -596,14 +589,14 @@ func getContainerPortList(podObj *corev1.Pod) []v1.ContainerPort {
 	return portList
 }
 
-// appendNamedPortIpsets helps with adding or deleting Pod namedPort IPsets (TODO) better naming?
+// appendNamedPortIpsets helps with adding or deleting Pod namedPort IPsets. (TODO): better naming?
 func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []v1.ContainerPort, podKey string, podIP string, delete bool) error {
 	for _, port := range portList {
 		if port.Name == "" {
 			continue
 		}
 
-		// (TODO) can we do protocol := port.Protocol ?
+		// (TODO): can we do protocol := port.Protocol ?
 		// protocol := port.Protocol
 		protocol := ""
 		switch port.Protocol {
