@@ -359,27 +359,14 @@ func TestUpdatePod(t *testing.T) {
 func TestUpdateHostNetworkPod(t *testing.T) {
 }
 
-// // TODO: move this function to util file?
-// func TestIsValidPod(t *testing.T) {
-// 	podObj := &corev1.Pod{
-// 		Status: corev1.PodStatus{
-// 			Phase: "Running",
-// 			PodIP: "1.2.3.4",
-// 		},
-// 	}
-// 	if ok := isValidPod(podObj); !ok {
-// 		t.Errorf("TestisValidPod failed @ isValidPod")
-// 	}
-// }
-
-// // TODO: move this function to util file?
-// func TestIsSystemPod(t *testing.T) {
-// 	podObj := &corev1.Pod{
-// 		ObjectMeta: metav1.ObjectMeta{
-// 			Namespace: util.KubeSystemFlag,
-// 		},
-// 	}
-// 	if ok := isSystemPod(podObj); !ok {
-// 		t.Errorf("TestisSystemPod failed @ isSystemPod")
-// 	}
-// }
+func TestHasValidPodIP(t *testing.T) {
+	podObj := &corev1.Pod{
+		Status: corev1.PodStatus{
+			Phase: "Running",
+			PodIP: "1.2.3.4",
+		},
+	}
+	if ok := hasValidPodIP(podObj); !ok {
+		t.Errorf("TestisValidPod failed @ isValidPod")
+	}
+}
