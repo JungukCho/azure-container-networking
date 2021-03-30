@@ -132,7 +132,7 @@ func (c *podController) needSync(eventType string, obj interface{}) (string, boo
 		return key, needSync
 	}
 
-	log.Logf("[POD %s EVENT for %s in %s", eventType, podObj.Name, podObj.Namespace)
+	log.Logf("[POD %s EVENT] for %s in %s", eventType, podObj.Name, podObj.Namespace)
 
 	if !hasValidPodIP(podObj) {
 		return key, needSync
@@ -175,21 +175,24 @@ func (c *podController) addPod(obj interface{}) {
 }
 
 func (c *podController) updatePod(old, new interface{}) {
-	oldPod := old.(*corev1.Pod)
-	newPod := new.(*corev1.Pod)
-
-	if oldPod.ResourceVersion == newPod.ResourceVersion {
-		// Periodic resync will send update events for all known pods.
-		// Two different versions of the same pods will always have different RVs.
-		log.Logf("[POD UPDATE EVENT] Two pods have the same RVs")
-		return
-	}
-
 	key, needSync := c.needSync("UPDATE", new)
 	if !needSync {
 		log.Logf("[POD UPDATE EVENT] No need to sync this pod")
 		return
 	}
+
+	// needSync checked validation of casting newPod.
+	newPod, _ := new.(*corev1.Pod)
+	oldPod, ok := old.(*corev1.Pod)
+	if ok {
+		if oldPod.ResourceVersion == newPod.ResourceVersion {
+			// Periodic resync will send update events for all known pods.
+			// Two different versions of the same pods will always have different RVs.
+			log.Logf("[POD UPDATE EVENT] Two pods have the same RVs")
+			return
+		}
+	}
+
 	c.workqueue.Add(key)
 }
 
