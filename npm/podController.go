@@ -158,7 +158,7 @@ func (c *podController) addPod(obj interface{}) {
 	// K8s categorizes Succeeded and Failed pods as a terminated pod and will not restart them
 	// So NPM will ignorer adding these pods
 	podObj, _ := obj.(*corev1.Pod)
-	if podObj.Status.Phase == v1.PodSucceeded || podObj.Status.Phase == v1.PodFailed {
+	if podObj.Status.Phase == corev1.PodSucceeded || podObj.Status.Phase == corev1.PodFailed {
 		return
 	}
 	c.workqueue.Add(key)
@@ -227,8 +227,7 @@ func (c *podController) deletePod(obj interface{}) {
 	}
 
 	// if the podIp exists, it must match the cachedIp
-	// (TODO): when does this situation happen? Is it ok to add it to workqueue?
-	if len(podObj.Status.PodIP) > 0 && cachedNpmPodObj.PodIP != podObj.Status.PodIP {
+	if hasValidPodIP(podObj) && cachedNpmPodObj.PodIP != podObj.Status.PodIP {
 		metrics.SendErrorLogAndMetric(util.PodID, "[DeletePod] Info: Unexpected state. Pod (Namespace:%s, Name:%s, uid:%s, has cachedPodIp:%s which is different from PodIp:%s",
 			util.GetNSNameWithPrefix(podObj.Namespace), podObj.ObjectMeta.Name, podObj.UID, cachedNpmPodObj.PodIP, podObj.Status.PodIP)
 	}
@@ -357,7 +356,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	// Add pod namespace if it doesn't exist
 	var err error
 	if _, exists := c.npMgr.NsMap[podNs]; !exists {
-		// (TODO): Any chance to return error?
+		// (TODO): need to change newNS function. It always returns "nil"
 		c.npMgr.NsMap[podNs], _ = newNs(podNs)
 		log.Logf("Creating set: %v, hashedSet: %v", podNs, util.GetHashedName(podNs))
 		if err = ipsMgr.CreateSet(podNs, append([]string{util.IpsetNetHashFlag})); err != nil {
@@ -401,7 +400,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	// Add pod namespace if it doesn't exist
 	var err error
 	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
-		// (TODO): Any chance to return error?
+		// (TODO): need to change newNS function. It always returns "nil"
 		c.npMgr.NsMap[newPodObjNs], _ = newNs(newPodObjNs)
 		log.Logf("Creating set: %v, hashedSet: %v", newPodObjNs, util.GetHashedName(newPodObjNs))
 		if err = ipsMgr.CreateSet(newPodObjNs, append([]string{util.IpsetNetHashFlag})); err != nil {
@@ -438,7 +437,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	}
 
 	// We are assuming that FAILED to RUNNING pod will send an update
-	if newPodObj.Status.Phase == v1.PodSucceeded || newPodObj.Status.Phase == v1.PodFailed {
+	if newPodObj.Status.Phase == corev1.PodSucceeded || newPodObj.Status.Phase == corev1.PodFailed {
 		if err = c.cleanUpDeletedPod(newPodObj); err != nil {
 			return err
 		}
@@ -581,8 +580,8 @@ func isInvalidPodUpdate(oldPodObj, newPodObj *corev1.Pod) bool {
 	return isInvalidUpdate
 }
 
-func getContainerPortList(podObj *corev1.Pod) []v1.ContainerPort {
-	portList := []v1.ContainerPort{}
+func getContainerPortList(podObj *corev1.Pod) []corev1.ContainerPort {
+	portList := []corev1.ContainerPort{}
 	for _, container := range podObj.Spec.Containers {
 		portList = append(portList, container.Ports...)
 	}
@@ -590,7 +589,7 @@ func getContainerPortList(podObj *corev1.Pod) []v1.ContainerPort {
 }
 
 // appendNamedPortIpsets helps with adding or deleting Pod namedPort IPsets. (TODO): better naming?
-func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []v1.ContainerPort, podKey string, podIP string, delete bool) error {
+func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []corev1.ContainerPort, podKey string, podIP string, delete bool) error {
 	for _, port := range portList {
 		if port.Name == "" {
 			continue
@@ -600,11 +599,11 @@ func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []v1.ContainerPor
 		// protocol := port.Protocol
 		protocol := ""
 		switch port.Protocol {
-		case v1.ProtocolUDP:
+		case corev1.ProtocolUDP:
 			protocol = util.IpsetUDPFlag
-		case v1.ProtocolSCTP:
+		case corev1.ProtocolSCTP:
 			protocol = util.IpsetSCTPFlag
-		case v1.ProtocolTCP:
+		case corev1.ProtocolTCP:
 			protocol = util.IpsetTCPFlag
 		}
 

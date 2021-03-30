@@ -3,7 +3,8 @@
 package npm
 
 import (
-	"reflect"
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,6 +24,11 @@ import (
 var (
 	alwaysReady        = func() bool { return true }
 	noResyncPeriodFunc = func() time.Duration { return 0 }
+)
+
+const (
+	HostNetwork    = true
+	NonHostNetwork = false
 )
 
 type podFixture struct {
@@ -54,7 +60,7 @@ func newFixture(t *testing.T) *podFixture {
 	return f
 }
 
-func (f *podFixture) newPodController() {
+func (f *podFixture) newPodController(stopCh chan struct{}) {
 	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
 	f.kubeInformer = kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
@@ -64,6 +70,8 @@ func (f *podFixture) newPodController() {
 	for _, pod := range f.podLister {
 		f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Add(pod)
 	}
+
+	f.kubeInformer.Start(stopCh)
 }
 
 func (f *podFixture) ipSetSave(ipsetConfigFile string) {
@@ -97,8 +105,7 @@ func newNPMgr(t *testing.T) *NetworkPolicyManager {
 	return npMgr
 }
 
-// 1. clean up below function
-func newPod(name, ns, rv string, labels map[string]string, status *corev1.PodStatus) *corev1.Pod {
+func createPod(name, ns, rv, podIP string, labels map[string]string, isHostNewtwork bool, podPhase corev1.PodPhase) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
@@ -106,35 +113,24 @@ func newPod(name, ns, rv string, labels map[string]string, status *corev1.PodSta
 			Labels:          labels,
 			ResourceVersion: rv,
 		},
-		Status: *status,
-	}
-}
-func newPodStatus(phase string, podIP string) *corev1.PodStatus {
-	return &corev1.PodStatus{
-		Phase: corev1.PodPhase(phase),
-		PodIP: podIP,
-	}
-}
-
-func createPod() *corev1.Pod {
-	labels := map[string]string{
-		"app": "test-pod",
-	}
-	status := newPodStatus("Running", "1.2.3.4")
-	podObj := newPod("test-pod", "test-namespace", "0", labels, status)
-	podObj.Spec = corev1.PodSpec{
-		Containers: []corev1.Container{
-			corev1.Container{
-				Ports: []corev1.ContainerPort{
-					corev1.ContainerPort{
-						Name:          "app:test-pod",
-						ContainerPort: 8080,
+		Spec: corev1.PodSpec{
+			HostNetwork: isHostNewtwork,
+			Containers: []corev1.Container{
+				corev1.Container{
+					Ports: []corev1.ContainerPort{
+						corev1.ContainerPort{
+							Name:          fmt.Sprintf("app:%s", name),
+							ContainerPort: 8080,
+						},
 					},
 				},
 			},
 		},
+		Status: corev1.PodStatus{
+			Phase: podPhase,
+			PodIP: podIP,
+		},
 	}
-	return podObj
 }
 
 func getKey(podObj *corev1.Pod, t *testing.T) string {
@@ -147,46 +143,14 @@ func getKey(podObj *corev1.Pod, t *testing.T) string {
 }
 
 func addPod(t *testing.T, f *podFixture, podObj *corev1.Pod) {
-	f.podLister = append(f.podLister, podObj)
-	f.kubeobjects = append(f.kubeobjects, podObj)
-
-	f.newPodController()
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	f.kubeInformer.Start(stopCh)
-
 	// simulate pod add event and add pod object to sharedInformer cache
 	f.podController.addPod(podObj)
+
 	if podObj.Spec.HostNetwork {
 		return
 	}
 
-	err := f.podController.syncPod(getKey(podObj, t))
-	if err != nil {
-		f.t.Errorf("error syncing pod: %v", err)
-	}
-
-	// TODO: add more checking list and clean up with tables with expected values.
-	if podObj.Spec.HostNetwork {
-		if len(f.npMgr.PodMap) != 0 {
-			t.Errorf("addPod failed @ PodMap length check -current len %d %v", len(f.npMgr.PodMap), f.npMgr.PodMap)
-		}
-	} else {
-		if len(f.npMgr.PodMap) != 1 {
-			t.Errorf("addPod failed @ PodMap length check - current len %d %v", len(f.npMgr.PodMap), f.npMgr.PodMap)
-		}
-	}
-
-	if podObj.Spec.HostNetwork {
-		if len(f.npMgr.NsMap) != 1 {
-			t.Errorf("addPod failed @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
-		}
-	} else {
-		if len(f.npMgr.NsMap) != 2 {
-			//  all-namespaces and ns-test-namespace
-			t.Errorf("addPod failed @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
-		}
-	}
+	f.podController.processNextWorkItem()
 }
 
 // // TODO: who call this function for message - type?
@@ -196,31 +160,13 @@ func deletePod(t *testing.T, f *podFixture, podObj *corev1.Pod) {
 
 	// simulate pod delete event and delete pod object from sharedInformer cache
 	f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Delete(podObj)
-
-	// call deletePod event
 	f.podController.deletePod(podObj)
-	if !podObj.Spec.HostNetwork {
-		err := f.podController.syncPod(getKey(podObj, t))
-		if err != nil {
-			f.t.Errorf("error syncing pod: %v", err)
-		}
-	}
-
-	// TODO: add more checking list and clean up with tables with expected values.
-	if len(f.npMgr.PodMap) != 0 {
-		t.Errorf("deletePod failed @ PodMap length check -current len %d %v", len(f.npMgr.PodMap), f.npMgr.PodMap)
-	}
 
 	if podObj.Spec.HostNetwork {
-		if len(f.npMgr.NsMap) != 1 {
-			t.Errorf("deletePod failed for HostNetwork @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
-		}
-	} else {
-		if len(f.npMgr.NsMap) != 2 {
-			//  all-namespaces and ns-test-namespace
-			t.Errorf("deletePod failed @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
-		}
+		return
 	}
+
+	f.podController.processNextWorkItem()
 }
 
 // Need to make more cases - interestings..
@@ -232,131 +178,217 @@ func updatePod(t *testing.T, f *podFixture, oldPodObj *corev1.Pod, newPodObj *co
 	f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Update(newPodObj)
 	f.podController.updatePod(oldPodObj, newPodObj)
 
-	// call deletePod event
-	if !newPodObj.Spec.HostNetwork {
-		err := f.podController.syncPod(getKey(newPodObj, t))
-		if err != nil {
-			f.t.Errorf("error syncing pod: %v", err)
-		}
-	}
-
-	// simulate pod delete event and delete pod object from sharedInformer cache
-	f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Delete(oldPodObj)
-
-	// call deletePod event
-	f.podController.deletePod(oldPodObj)
-	if !oldPodObj.Spec.HostNetwork {
-		err := f.podController.syncPod(getKey(oldPodObj, t))
-		if err != nil {
-			f.t.Errorf("error syncing pod: %v", err)
-		}
-	}
-
-	// TODO: add more checking list and clean up with tables with expected values.
 	if newPodObj.Spec.HostNetwork {
-		if len(f.npMgr.PodMap) != 0 {
-			t.Errorf("updatePod failed @ PodMap length check -current len %d %v", len(f.npMgr.PodMap), f.npMgr.PodMap)
-		}
-	} else {
-		if len(f.npMgr.PodMap) != 1 {
-			t.Errorf("updatePod failed @ PodMap length check - current len %d %v", len(f.npMgr.PodMap), f.npMgr.PodMap)
-		}
+		return
 	}
 
-	if newPodObj.Spec.HostNetwork {
-		if len(f.npMgr.NsMap) != 1 {
-			t.Errorf("updatePod failed @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
+	f.podController.processNextWorkItem()
+}
+
+type expectedValues struct {
+	expectedLenOfPodMap    int
+	expectedLenOfNsMap     int
+	expectedLenOfWorkQueue int
+}
+
+func checkPodTestResult(testName string, f *podFixture, testCases []expectedValues) {
+	for _, test := range testCases {
+		if got := len(f.npMgr.PodMap); got != test.expectedLenOfPodMap {
+			f.t.Errorf("PodMap length = %d, want %d", got, test.expectedLenOfPodMap)
 		}
-	} else {
-		if len(f.npMgr.NsMap) != 2 {
-			//  all-namespaces and ns-test-namespace
-			t.Errorf("updatePod failed @ nsMap length check - current len %d %v", len(f.npMgr.NsMap), f.npMgr.NsMap)
+		if got := len(f.npMgr.NsMap); got != test.expectedLenOfNsMap {
+			f.t.Errorf("npMgr length = %d, want %d", got, test.expectedLenOfNsMap)
+		}
+		if got := f.podController.workqueue.Len(); got != test.expectedLenOfWorkQueue {
+			f.t.Errorf("Workqueue length = %d, want %d", got, test.expectedLenOfWorkQueue)
 		}
 	}
-
-	podKey := getKey(newPodObj, t)
-	cachedPodObj, exists := f.podController.npMgr.PodMap[podKey]
-	if !exists {
-		t.Errorf("TestOldRVUpdatePod failed @ pod exists check")
+}
+func TestAddMultiplePods(t *testing.T) {
+	labels := map[string]string{
+		"app": "test-pod",
 	}
+	podObj1 := createPod("test-pod-1", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
+	podObj2 := createPod("test-pod-2", "test-namespace", "0", "1.2.3.5", labels, NonHostNetwork, corev1.PodRunning)
 
-	if cachedPodObj.ResourceVersion != 1 {
-		t.Errorf("TestOldRVUpdatePod failed @ resourceVersion check - %d", cachedPodObj.ResourceVersion)
-	}
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj1, podObj2)
+	f.kubeobjects = append(f.kubeobjects, podObj1, podObj2)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
 
-	if !reflect.DeepEqual(cachedPodObj.Labels, newPodObj.Labels) {
-		t.Errorf("TestOldRVUpdatePod failed @ labels check")
+	addPod(t, f, podObj1)
+	addPod(t, f, podObj2)
+
+	testCases := []expectedValues{
+		{2, 2, 0},
 	}
+	checkPodTestResult("TestAddMultiplePods", f, testCases)
 }
 
 func TestAddPod(t *testing.T) {
-	f := newFixture(t)
-	f.ipSetSave(util.IpsetTestConfigFile)
-	defer f.ipSetRestore(util.IpsetTestConfigFile)
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	podObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
 
-	podObj := createPod()
-	podObj.Spec.HostNetwork = false
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj)
+	f.kubeobjects = append(f.kubeobjects, podObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
 	addPod(t, f, podObj)
+	testCases := []expectedValues{
+		{1, 2, 0},
+	}
+	checkPodTestResult("TestAddPod", f, testCases)
 }
 
 func TestAddHostNetworkPod(t *testing.T) {
-	f := newFixture(t)
-	f.ipSetSave(util.IpsetTestConfigFile)
-	defer f.ipSetRestore(util.IpsetTestConfigFile)
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	podObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, HostNetwork, corev1.PodRunning)
 
-	podObj := createPod()
-	podObj.Spec.HostNetwork = true
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj)
+	f.kubeobjects = append(f.kubeobjects, podObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
 	addPod(t, f, podObj)
+	testCases := []expectedValues{
+		{0, 1, 0},
+	}
+	checkPodTestResult("TestAddHostNetworkPod", f, testCases)
+
 }
 
 func TestDeletePod(t *testing.T) {
-	f := newFixture(t)
-	f.ipSetSave(util.IpsetTestConfigFile)
-	defer f.ipSetRestore(util.IpsetTestConfigFile)
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	podObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
 
-	podObj := createPod()
-	podObj.Spec.HostNetwork = false
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj)
+	f.kubeobjects = append(f.kubeobjects, podObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
 	deletePod(t, f, podObj)
+	testCases := []expectedValues{
+		{0, 2, 0},
+	}
+	checkPodTestResult("TestDeletePod", f, testCases)
 }
 
 func TestDeleteHostNetworkPod(t *testing.T) {
-	f := newFixture(t)
-	f.ipSetSave(util.IpsetTestConfigFile)
-	defer f.ipSetRestore(util.IpsetTestConfigFile)
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	podObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, HostNetwork, corev1.PodRunning)
 
-	podObj := createPod()
-	podObj.Spec.HostNetwork = true
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj)
+	f.kubeobjects = append(f.kubeobjects, podObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
 	deletePod(t, f, podObj)
+	testCases := []expectedValues{
+		{0, 1, 0},
+	}
+	checkPodTestResult("TestDeleteHostNetworkPod", f, testCases)
 }
 
-// need to clean up
-func TestUpdatePod(t *testing.T) {
-	f := newFixture(t)
-	f.ipSetSave(util.IpsetTestConfigFile)
-	defer f.ipSetRestore(util.IpsetTestConfigFile)
-
-	oldRV := "0"
-	newRV := "1"
-	isHostNetwork := false
-
+func TestLabelUpdatePod(t *testing.T) {
 	labels := map[string]string{
-		"app": "old-test-pod",
+		"app": "test-pod",
 	}
-	status := newPodStatus("Running", "1.2.3.4")
-	oldPodObj := newPod("old-test-pod", "test-namespace", oldRV, labels, status)
-	oldPodObj.Spec.HostNetwork = isHostNetwork
+	oldPodObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
 
-	labels = map[string]string{
+	f := newFixture(t)
+	f.podLister = append(f.podLister, oldPodObj)
+	f.kubeobjects = append(f.kubeobjects, oldPodObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
+	newPodObj := oldPodObj.DeepCopy()
+	newPodObj.Labels = map[string]string{
 		"app": "new-test-pod",
 	}
-	status = newPodStatus("Running", "4.3.2.1")
-	newPodObj := newPod("new-test-pod", "test-namespace", newRV, labels, status)
-	newPodObj.Spec.HostNetwork = isHostNetwork
-
+	// oldPodObj.ResourceVersion value is "0"
+	newRV, _ := strconv.Atoi(oldPodObj.ResourceVersion)
+	newPodObj.ResourceVersion = fmt.Sprintf("%d", newRV+1)
 	updatePod(t, f, oldPodObj, newPodObj)
+
+	testCases := []expectedValues{
+		{1, 2, 0},
+	}
+	checkPodTestResult("TestLabelUpdatePod", f, testCases)
 }
 
-func TestUpdateHostNetworkPod(t *testing.T) {
+func TestIPAddressUpdatePod(t *testing.T) {
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	oldPodObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
+
+	f := newFixture(t)
+	f.podLister = append(f.podLister, oldPodObj)
+	f.kubeobjects = append(f.kubeobjects, oldPodObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
+	newPodObj := oldPodObj.DeepCopy()
+	// oldPodObj.ResourceVersion value is "0"
+	newRV, _ := strconv.Atoi(oldPodObj.ResourceVersion)
+	newPodObj.ResourceVersion = fmt.Sprintf("%d", newRV+1)
+	// oldPodObj PodIP is "1.2.3.4"
+	newPodObj.Status.PodIP = "4.3.2.1"
+	updatePod(t, f, oldPodObj, newPodObj)
+
+	testCases := []expectedValues{
+		{1, 2, 0},
+	}
+	checkPodTestResult("TestIPAddressUpdatePod", f, testCases)
+}
+
+func TestPodStatusUpdatePod(t *testing.T) {
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	oldPodObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
+
+	f := newFixture(t)
+	f.podLister = append(f.podLister, oldPodObj)
+	f.kubeobjects = append(f.kubeobjects, oldPodObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
+	newPodObj := oldPodObj.DeepCopy()
+	// oldPodObj.ResourceVersion value is "0"
+	newRV, _ := strconv.Atoi(oldPodObj.ResourceVersion)
+	newPodObj.ResourceVersion = fmt.Sprintf("%d", newRV+1)
+
+	// oldPodObj PodIP is "1.2.3.4"
+	newPodObj.Status.Phase = corev1.PodSucceeded
+	updatePod(t, f, oldPodObj, newPodObj)
+
+	testCases := []expectedValues{
+		{0, 2, 0},
+	}
+	checkPodTestResult("TestPodStatusUpdatePod", f, testCases)
 }
 
 func TestHasValidPodIP(t *testing.T) {
