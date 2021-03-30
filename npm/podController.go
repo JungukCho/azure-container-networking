@@ -165,9 +165,12 @@ func (c *podController) addPod(obj interface{}) {
 	// K8s categorizes Succeeded and Failed pods as a terminated pod and will not restart them
 	// So NPM will ignorer adding these pods
 	podObj, _ := obj.(*corev1.Pod)
-	if podObj.Status.Phase == corev1.PodSucceeded || podObj.Status.Phase == corev1.PodFailed {
+
+	// If newPodObj status is either corev1.PodSucceeded or corev1.PodFailed or DeletionTimestamp is set, do not need to add it into workqueue.
+	if isCompletePod(podObj) {
 		return
 	}
+
 	c.workqueue.Add(key)
 }
 
@@ -228,6 +231,8 @@ func (c *podController) deletePod(obj interface{}) {
 	c.npMgr.Lock()
 	defer c.npMgr.Unlock()
 
+	// If this pod object is not in the PodMap, we do not need to clean-up states for this pod
+	// since podController did not apply for any states for this pod
 	cachedNpmPodObj, npmPodExists := c.npMgr.PodMap[key]
 	if !npmPodExists {
 		return
@@ -319,27 +324,34 @@ func (c *podController) syncPod(key string) error {
 	// (TODO): Reduce scope of lock later
 	c.npMgr.Lock()
 	defer c.npMgr.Unlock()
+
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Logf("pod %s not found, may be it is deleted", key)
-			// Find the npmPod object from PortMap local cache and start cleaning up processes
 			cachedNpmPodObj, exist := c.npMgr.PodMap[key]
-			if exist {
-				err = c.cleanUpDeletedPod(cachedNpmPodObj.getPodObjFromNpmPodObj())
-				if err != nil {
-					metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when pod is not found", err)
-					return fmt.Errorf("Error: %v when pod is not found\n", err)
-				}
+			// if the npmPod does not exists, we do not need to clean up process and retry it
+			if !exist {
+				return nil
 			}
+
+			// Found the npmPod object from PodMap local cache and start cleaning up processes
+			err = c.cleanUpDeletedPod(cachedNpmPodObj.getPodObjFromNpmPodObj())
+			if err != nil {
+				// need to retry this cleaning-up process
+				metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when pod is not found", err)
+				return fmt.Errorf("Error: %v when pod is not found\n", err)
+			}
+			return err
 		}
+
 		return err
 	}
 
-	if pod.DeletionTimestamp != nil || pod.DeletionGracePeriodSeconds != nil {
-		err = c.cleanUpDeletedPod(pod)
-		if err != nil {
-			metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when DeletionTimestamp or DeletionGracePeriodSeconds is not nil", err)
-			return fmt.Errorf("Error: %v when DeletionTimestamp or DeletionGracePeriodSeconds is not nil\n", err)
+	// If newPodObj status is either corev1.PodSucceeded or corev1.PodFailed or DeletionTimestamp is set, start clean-up the lastly applied states.
+	if isCompletePod(pod) {
+		if err = c.cleanUpDeletedPod(pod); err != nil {
+			metrics.SendErrorLogAndMetric(util.PodID, "Error: %v when pod is in completed state.", err)
+			return fmt.Errorf("Error: %v when when pod is in completed state.\n", err)
 		}
 		return nil
 	}
@@ -416,7 +428,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	}
 
 	cachedNpmPodObj, exists := c.npMgr.PodMap[podKey]
-	// No cached npmPod exists, which means pod is created. "syncAddAndUpdatePod" is called due to "addPod" event
+	// No cached npmPod exists. start adding the pod in a cache
 	if !exists {
 		if err = c.syncAddedPod(newPodObj); err != nil {
 			return err
@@ -424,41 +436,15 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		return nil
 	}
 
-	// Start dealing with "updatePod" event
-	if isInvalidPodUpdate(cachedNpmPodObj.getPodObjFromNpmPodObj(), newPodObj) {
-		return nil
-	}
-
-	// (TODO): When does this situation happen?
-	check := util.CompareUintResourceVersions(
-		cachedNpmPodObj.ResourceVersion,
-		util.ParseResourceVersion(newPodObj.ObjectMeta.ResourceVersion),
-	)
-	if !check {
-		log.Logf(
-			"POD UPDATING ignored as resourceVersion of cached pod is greater Pod:\n cached pod: [%s/%s/%s/%d]\n new pod: [%s/%s/%s/%s]",
-			cachedNpmPodObj.Namespace, cachedNpmPodObj.Name, cachedNpmPodObj.PodIP, cachedNpmPodObj.ResourceVersion,
-			newPodObj.ObjectMeta.Namespace, newPodObj.ObjectMeta.Name, newPodObj.Status.PodIP, newPodObj.ObjectMeta.ResourceVersion,
-		)
-		return nil
-	}
-
-	// We are assuming that FAILED to RUNNING pod will send an update
-	if newPodObj.Status.Phase == corev1.PodSucceeded || newPodObj.Status.Phase == corev1.PodFailed {
-		if err = c.cleanUpDeletedPod(newPodObj); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	log.Logf("POD UPDATING:\n new pod: [%s/%s/%+v/%s/%s]\n cached pod: [%s/%s/%+v/%s]",
-		newPodObjNs, newPodObj.Name, newPodObj.Labels, newPodObj.Status.Phase, newPodObj.Status.PodIP,
-		cachedNpmPodObj.Namespace, cachedNpmPodObj.Name, cachedNpmPodObj.Labels, cachedNpmPodObj.PodIP,
-	)
+	// Dealing with "updatePod" event - Compare last applied states against current Pod states
+	// There are two possiblities for npmPodObj and newPodObj
+	// #1 case The same object with the same UID and the same key (namespace + name)
+	// #2 case Different objects with different UID, but the same key (namespace + name) due to missing some events for the old object
+	// Start processing three update cases - "ip address", label", and "portlist" change by comparing last applied states against current Pod states
 
 	deleteFromIPSets := []string{}
 	addToIPSets := []string{}
-	// if the podIp exists, it must match the cachedIp
+	// compare cached NPMPod's IP address against newPod's IP address
 	if cachedNpmPodObj.PodIP != newPodObj.Status.PodIP {
 		metrics.SendErrorLogAndMetric(util.PodID, "[syncAddAndUpdatePod] Info: Unexpected state. Pod (Namespace:%s, Name:%s, uid:%s, has cachedPodIp:%s which is different from PodIp:%s",
 			newPodObjNs, newPodObj.Name, cachedNpmPodObj.PodUID, cachedNpmPodObj.PodIP, newPodObj.Status.PodIP)
@@ -473,6 +459,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		log.Logf("Deleting pod %s %s from ipset %s and adding pod %s to ipset %s",
 			cachedNpmPodObj.PodUID, cachedNpmPodObj.PodIP, cachedNpmPodObj.Namespace, newPodObj.Status.PodIP, newPodObjNs,
 		)
+
 		// Delete the pod from its namespace's ipset.
 		if err = ipsMgr.DeleteFromSet(cachedNpmPodObj.Namespace, cachedNpmPodObj.PodIP, podKey); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to delete pod from namespace ipset with err: %v", err)
@@ -481,13 +468,9 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		if err = ipsMgr.AddToSet(newPodObjNs, newPodObj.Status.PodIP, util.IpsetNetHashFlag, podKey); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to namespace ipset with err: %v", err)
 		}
-	} else {
-		//if no change in labels then return
-		if reflect.DeepEqual(cachedNpmPodObj.Labels, newPodObj.Labels) {
-			log.Logf("POD UPDATING:\n nothing to delete or add. pod: [%s/%s]", newPodObjNs, newPodObj.Name)
-			return nil
-		}
-		// delete PodIP from removed labels and add PodIp to new labels
+	} else { // the IP addresses of the cached npmPod and newPodObj is the same
+		// If no change in labels, then GetIPSetListCompareLabels will return empty list.
+		// Otherwise it returns list of deleted PodIP from cached pod's labels and list of added PodIp from new pod's labels
 		addToIPSets, deleteFromIPSets = util.GetIPSetListCompareLabels(cachedNpmPodObj.Labels, newPodObj.Labels)
 	}
 
@@ -524,6 +507,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 
 	// Updating pod cache with new npmPod information
 	c.npMgr.PodMap[podKey] = newNpmPod(newPodObj)
+
 	return nil
 }
 
@@ -562,6 +546,17 @@ func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
 
 	delete(c.npMgr.PodMap, podKey)
 	return nil
+}
+
+func isCompletePod(podObj *corev1.Pod) bool {
+	if podObj.DeletionTimestamp != nil {
+		return true
+	}
+
+	if podObj.Status.Phase == corev1.PodSucceeded || podObj.Status.Phase == corev1.PodFailed {
+		return true
+	}
+	return false
 }
 
 func hasValidPodIP(podObj *corev1.Pod) bool {
