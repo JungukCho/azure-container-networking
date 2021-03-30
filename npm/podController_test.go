@@ -121,6 +121,7 @@ func createPod(name, ns, rv, podIP string, labels map[string]string, isHostNewtw
 						corev1.ContainerPort{
 							Name:          fmt.Sprintf("app:%s", name),
 							ContainerPort: 8080,
+							//Protocol:      "TCP",
 						},
 					},
 				},

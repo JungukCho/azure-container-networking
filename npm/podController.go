@@ -27,6 +27,14 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+// NamedPortOperation decides opeartion (e.g., delete or add) for named port ipset in manageNamedPortIpsets
+type NamedPortOperation string
+
+const (
+	DeleteNamedPortIpsets NamedPortOperation = "del"
+	AddNamedPortIpsets    NamedPortOperation = "add"
+)
+
 type NpmPod struct {
 	Name            string
 	Namespace       string
@@ -380,7 +388,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	}
 
 	// Add pod's named ports from its ipset.
-	if err = appendNamedPortIpsets(ipsMgr, npmPodObj.ContainerPorts, podKey, npmPodObj.PodIP, false); err != nil {
+	if err = manageNamedPortIpsets(ipsMgr, npmPodObj.ContainerPorts, podKey, npmPodObj.PodIP, AddNamedPortIpsets); err != nil {
 		return fmt.Errorf("[syncAddedPod] Error: failed to add pod to named port ipset with err: %v", err)
 	}
 
@@ -506,11 +514,11 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	newPodPorts := getContainerPortList(newPodObj)
 	if !reflect.DeepEqual(cachedNpmPodObj.ContainerPorts, newPodPorts) {
 		// Delete cached pod's named ports from its ipset.
-		if err = appendNamedPortIpsets(ipsMgr, cachedNpmPodObj.ContainerPorts, podKey, cachedNpmPodObj.PodIP, true); err != nil {
+		if err = manageNamedPortIpsets(ipsMgr, cachedNpmPodObj.ContainerPorts, podKey, cachedNpmPodObj.PodIP, DeleteNamedPortIpsets); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to delete pod from named port ipset with err: %v", err)
 		}
 		// Add new pod's named ports from its ipset.
-		if err = appendNamedPortIpsets(ipsMgr, newPodPorts, podKey, newPodObj.Status.PodIP, false); err != nil {
+		if err = manageNamedPortIpsets(ipsMgr, newPodPorts, podKey, newPodObj.Status.PodIP, AddNamedPortIpsets); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add pod to named port ipset with err: %v", err)
 		}
 	}
@@ -548,8 +556,8 @@ func (c *podController) cleanUpDeletedPod(podObj *corev1.Pod) error {
 		}
 	}
 
-	// Delete pod's named ports from its ipset. Need to pass true in the appendNamedPortIpsets function call
-	if err = appendNamedPortIpsets(ipsMgr, cachedNpmPodObj.ContainerPorts, podKey, cachedNpmPodObj.PodIP, true); err != nil {
+	// Delete pod's named ports from its ipset. Need to pass true in the manageNamedPortIpsets function call
+	if err = manageNamedPortIpsets(ipsMgr, cachedNpmPodObj.ContainerPorts, podKey, cachedNpmPodObj.PodIP, DeleteNamedPortIpsets); err != nil {
 		return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from named port ipset with err: %v", err)
 	}
 
@@ -588,34 +596,29 @@ func getContainerPortList(podObj *corev1.Pod) []corev1.ContainerPort {
 	return portList
 }
 
-// appendNamedPortIpsets helps with adding or deleting Pod namedPort IPsets. (TODO): better naming?
-func appendNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []corev1.ContainerPort, podKey string, podIP string, delete bool) error {
+// manageNamedPortIpsets helps with adding or deleting Pod namedPort IPsets.
+func manageNamedPortIpsets(ipsMgr *ipsm.IpsetManager, portList []corev1.ContainerPort, podKey string, podIP string, namedPortOperation NamedPortOperation) error {
 	for _, port := range portList {
 		if port.Name == "" {
 			continue
 		}
 
-		// (TODO): can we do protocol := port.Protocol ?
-		// protocol := port.Protocol
-		protocol := ""
-		switch port.Protocol {
-		case corev1.ProtocolUDP:
-			protocol = util.IpsetUDPFlag
-		case corev1.ProtocolSCTP:
-			protocol = util.IpsetSCTPFlag
-		case corev1.ProtocolTCP:
-			protocol = util.IpsetTCPFlag
+		// K8s guarantees port.Protocol has "TCP", "UDP", or "SCTP" if the field exists.
+		var protocol string
+		if len(port.Protocol) != 0 {
+			// without adding ":" after protocol, ipset complains.
+			protocol = fmt.Sprintf("%s:", port.Protocol)
 		}
 
 		namedPortname := util.NamedPortIPSetPrefix + port.Name
 		var err error
-		if delete {
-			// Delete the pod's named ports from its ipset.
+
+		switch namedPortOperation {
+		case DeleteNamedPortIpsets:
 			if err = ipsMgr.DeleteFromSet(namedPortname, fmt.Sprintf("%s,%s%d", podIP, protocol, port.ContainerPort), podKey); err != nil {
 				return err
 			}
-		} else {
-			// Add the pod's named ports to its ipset.
+		case AddNamedPortIpsets:
 			if err = ipsMgr.AddToSet(namedPortname, fmt.Sprintf("%s,%s%d", podIP, protocol, port.ContainerPort), util.IpsetIPPortHashFlag, podKey); err != nil {
 				return err
 			}
