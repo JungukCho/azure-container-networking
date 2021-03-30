@@ -13,7 +13,6 @@ import (
 	"github.com/Azure/azure-container-networking/npm/util"
 
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,9 +41,9 @@ type NpmPod struct {
 	PodUID          string
 	PodIP           string
 	IsHostNetwork   bool
-	PodIPs          []v1.PodIP
+	PodIPs          []corev1.PodIP
 	Labels          map[string]string
-	ContainerPorts  []v1.ContainerPort
+	ContainerPorts  []corev1.ContainerPort
 	ResourceVersion uint64 // Pod Resource Version
 	Phase           corev1.PodPhase
 }
@@ -84,8 +83,8 @@ func (nPod *NpmPod) getPodObjFromNpmPodObj() *corev1.Pod {
 		Spec: corev1.PodSpec{
 			HostNetwork: nPod.IsHostNetwork,
 			NodeName:    nPod.NodeName,
-			Containers: []v1.Container{
-				v1.Container{
+			Containers: []corev1.Container{
+				corev1.Container{
 					Ports: nPod.ContainerPorts,
 				},
 			},
@@ -98,7 +97,7 @@ type podController struct {
 	podLister       corelisters.PodLister
 	podListerSynced cache.InformerSynced
 	workqueue       workqueue.RateLimitingInterface
-	//podCache        map[string]*v1.Pod
+	//podCache        map[string]*corev1.Pod
 	// (TODO): podController does not need to have whole NetworkPolicyManager pointer. Need to improve it
 	npMgr *NetworkPolicyManager
 }
