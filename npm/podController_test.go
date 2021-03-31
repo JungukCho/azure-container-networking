@@ -11,7 +11,6 @@ import (
 	"github.com/Azure/azure-container-networking/npm/ipsm"
 	"github.com/Azure/azure-container-networking/npm/util"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,7 +36,7 @@ type podFixture struct {
 	kubeclient *k8sfake.Clientset
 	// Objects to put in the store.
 	podLister []*corev1.Pod
-	// Actions expected to happen on the client.
+	// (TODO) Actions expected to happen on the client. Will use this to check action.
 	kubeactions []core.Action
 	// Objects from here preloaded into NewSimpleFake.
 	kubeobjects []runtime.Object
@@ -91,11 +90,8 @@ func (f *podFixture) ipSetRestore(ipsetConfigFile string) {
 
 func newNPMgr(t *testing.T) *NetworkPolicyManager {
 	npMgr := &NetworkPolicyManager{
-		NsMap:            make(map[string]*Namespace),
-		PodMap:           make(map[string]*NpmPod),
-		RawNpMap:         make(map[string]*networkingv1.NetworkPolicy),
-		ProcessedNpMap:   make(map[string]*networkingv1.NetworkPolicy),
-		TelemetryEnabled: false,
+		NsMap:  make(map[string]*Namespace),
+		PodMap: make(map[string]*NpmPod),
 	}
 
 	// (TODO:) should remove error return
