@@ -236,15 +236,9 @@ func (c *podController) deletePod(obj interface{}) {
 
 	// If this pod object is not in the PodMap, we do not need to clean-up states for this pod
 	// since podController did not apply for any states for this pod
-	cachedNpmPodObj, npmPodExists := c.npMgr.PodMap[key]
+	_, npmPodExists := c.npMgr.PodMap[key]
 	if !npmPodExists {
 		return
-	}
-
-	// if the podIp exists, it must match the cachedIp
-	if hasValidPodIP(podObj) && cachedNpmPodObj.PodIP != podObj.Status.PodIP {
-		metrics.SendErrorLogAndMetric(util.PodID, "[DeletePod] Info: Unexpected state. Pod (Namespace:%s, Name:%s, uid:%s, has cachedPodIp:%s which is different from PodIp:%s",
-			util.GetNSNameWithPrefix(podObj.Namespace), podObj.ObjectMeta.Name, podObj.UID, cachedNpmPodObj.PodIP, podObj.Status.PodIP)
 	}
 
 	c.workqueue.Add(key)
@@ -568,21 +562,6 @@ func hasValidPodIP(podObj *corev1.Pod) bool {
 
 func isHostNetworkPod(podObj *corev1.Pod) bool {
 	return podObj.Spec.HostNetwork
-}
-
-func isInvalidPodUpdate(oldPodObj, newPodObj *corev1.Pod) bool {
-	isInvalidUpdate := oldPodObj.ObjectMeta.Namespace == newPodObj.ObjectMeta.Namespace &&
-		oldPodObj.ObjectMeta.Name == newPodObj.ObjectMeta.Name &&
-		oldPodObj.Status.Phase == newPodObj.Status.Phase &&
-		oldPodObj.Status.PodIP == newPodObj.Status.PodIP &&
-		newPodObj.ObjectMeta.DeletionTimestamp == nil &&
-		newPodObj.ObjectMeta.DeletionGracePeriodSeconds == nil
-	isInvalidUpdate = isInvalidUpdate &&
-		reflect.DeepEqual(oldPodObj.ObjectMeta.Labels, newPodObj.ObjectMeta.Labels) &&
-		reflect.DeepEqual(oldPodObj.Status.PodIPs, newPodObj.Status.PodIPs) &&
-		reflect.DeepEqual(getContainerPortList(oldPodObj), getContainerPortList(newPodObj))
-
-	return isInvalidUpdate
 }
 
 func getContainerPortList(podObj *corev1.Pod) []corev1.ContainerPort {
