@@ -143,7 +143,8 @@ func addPod(t *testing.T, f *podFixture, podObj *corev1.Pod) {
 	// simulate pod add event and add pod object to sharedInformer cache
 	f.podController.addPod(podObj)
 
-	if podObj.Spec.HostNetwork {
+	if f.podController.workqueue.Len() == 0 {
+		t.Logf("Add Pod: worker queue length is 0 ")
 		return
 	}
 
@@ -159,7 +160,8 @@ func deletePod(t *testing.T, f *podFixture, podObj *corev1.Pod) {
 	f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Delete(podObj)
 	f.podController.deletePod(podObj)
 
-	if podObj.Spec.HostNetwork {
+	if f.podController.workqueue.Len() == 0 {
+		t.Logf("Delete Pod: worker queue length is 0 ")
 		return
 	}
 
@@ -175,7 +177,8 @@ func updatePod(t *testing.T, f *podFixture, oldPodObj *corev1.Pod, newPodObj *co
 	f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Update(newPodObj)
 	f.podController.updatePod(oldPodObj, newPodObj)
 
-	if newPodObj.Spec.HostNetwork {
+	if f.podController.workqueue.Len() == 0 {
+		t.Logf("Update Pod: worker queue length is 0 ")
 		return
 	}
 
