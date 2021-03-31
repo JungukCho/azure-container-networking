@@ -54,7 +54,7 @@ type NetworkPolicyManager struct {
 
 	NodeName                     string
 	NsMap                        map[string]*Namespace
-	PodMap                       map[string]*NpmPod                     // Key is ns-<nsname>/<podname>/<poduuid>
+	PodMap                       map[string]*NpmPod                     // Key is <nsname>/<podname>
 	RawNpMap                     map[string]*networkingv1.NetworkPolicy // Key is ns-<nsname>/<policyname>
 	ProcessedNpMap               map[string]*networkingv1.NetworkPolicy // Key is ns-<nsname>/<podSelectorHash>
 	isAzureNpmChainCreated       bool
