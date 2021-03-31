@@ -193,6 +193,18 @@ func (c *podController) updatePod(old, new interface{}) {
 		}
 	}
 
+	c.npMgr.Lock()
+	defer c.npMgr.Unlock()
+	cachedNpmPodObj, npmPodExists := c.npMgr.PodMap[key]
+	if npmPodExists {
+		// if newPod does not have different states against lastly applied states stored in cachedNpmPodObj,
+		// podController does not need to reconcile this update.
+		// in this updatePod event, newPod was updated with states which PodController does not need to reconcile.
+		if isInvalidPodUpdate(cachedNpmPodObj, newPod) {
+			return
+		}
+	}
+
 	c.workqueue.Add(key)
 }
 
@@ -570,6 +582,19 @@ func getContainerPortList(podObj *corev1.Pod) []corev1.ContainerPort {
 		portList = append(portList, container.Ports...)
 	}
 	return portList
+}
+
+// (TODO): better naming?
+func isInvalidPodUpdate(npmPod *NpmPod, newPodObj *corev1.Pod) bool {
+	return npmPod.Namespace == newPodObj.ObjectMeta.Namespace &&
+		npmPod.Name == newPodObj.ObjectMeta.Name &&
+		npmPod.Phase == newPodObj.Status.Phase &&
+		npmPod.PodIP == newPodObj.Status.PodIP &&
+		newPodObj.ObjectMeta.DeletionTimestamp == nil &&
+		newPodObj.ObjectMeta.DeletionGracePeriodSeconds == nil &&
+		reflect.DeepEqual(npmPod.Labels, newPodObj.ObjectMeta.Labels) &&
+		reflect.DeepEqual(npmPod.PodIPs, newPodObj.Status.PodIPs) &&
+		reflect.DeepEqual(npmPod.ContainerPorts, getContainerPortList(newPodObj))
 }
 
 // manageNamedPortIpsets helps with adding or deleting Pod namedPort IPsets.
