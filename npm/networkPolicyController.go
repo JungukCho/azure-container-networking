@@ -22,7 +22,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-// NamedPortOperation decides opeartion (e.g., delete or add) for named port ipset in manageNamedPortIpsets
+// IsSafeCleanUpAzureNpmChain is used to indicate whether default Azure NPM chain can be safely deleted or not.
 type IsSafeCleanUpAzureNpmChain bool
 
 const (
@@ -39,19 +39,16 @@ type networkPolicyController struct {
 	npMgr *NetworkPolicyManager
 	// flag to indicate default Azure NPM chain is created or not
 	isAzureNpmChainCreated bool
-	// flag to indicate deleting default Azure NPM chaing is ok or not
-	isSafeToCleanUpAzureNpmChain bool
 }
 
 func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInformer, clientset kubernetes.Interface, npMgr *NetworkPolicyManager) *networkPolicyController {
 	netPolController := &networkPolicyController{
-		clientset:                    clientset,
-		netPolLister:                 npInformer.Lister(),
-		netPolListerSynced:           npInformer.Informer().HasSynced,
-		workqueue:                    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetPols"),
-		npMgr:                        npMgr,
-		isAzureNpmChainCreated:       false,
-		isSafeToCleanUpAzureNpmChain: true,
+		clientset:              clientset,
+		netPolLister:           npInformer.Lister(),
+		netPolListerSynced:     npInformer.Informer().HasSynced,
+		workqueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetPols"),
+		npMgr:                  npMgr,
+		isAzureNpmChainCreated: false,
 	}
 
 	npInformer.Informer().AddEventHandler(
