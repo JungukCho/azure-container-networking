@@ -224,6 +224,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
 		return nil
 	}
+
 	log.Logf("SyncNetPol %s %s %s", key, namespace, name)
 
 	// Get the network policy resource with this namespace/name
@@ -255,7 +256,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 
 	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
 	// This is early cleaning up process from updateNetPol event
-	if netPolObj.ObjectMeta.DeletionTimestamp == nil && netPolObj.ObjectMeta.DeletionGracePeriodSeconds == nil {
+	if netPolObj.ObjectMeta.DeletionTimestamp != nil || netPolObj.ObjectMeta.DeletionGracePeriodSeconds != nil {
 		err = c.deleteNetworkPolicy(netPolObj, SafeToCleanUpAzureNpmChain)
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
