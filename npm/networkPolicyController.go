@@ -28,9 +28,10 @@ type networkPolicyController struct {
 	netPolListerSynced cache.InformerSynced
 	workqueue          workqueue.RateLimitingInterface
 	// (TODO): networkPolController does not need to have whole NetworkPolicyManager pointer. Need to improve it
-	npMgr                  *NetworkPolicyManager
+	npMgr *NetworkPolicyManager
+	// flag to indicate default Azure NPM chain is created or not
 	isAzureNpmChainCreated bool
-	// (TODO): why do we have this bool variable even though isAzureNpmChainCreated exists.
+	// flag to indicate deleting default Azure NPM chaing is ok or not
 	isSafeToCleanUpAzureNpmChain bool
 }
 
@@ -78,8 +79,6 @@ func (c *networkPolicyController) addNetPol(obj interface{}) {
 		return
 	}
 
-	// (TODO): need to remove
-	log.Logf("[NETPOL ADD EVENT] add key %s into workqueue", key)
 	c.workqueue.Add(key)
 }
 
@@ -221,8 +220,8 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
 		return nil
 	}
-
 	log.Logf("SyncNetPol %s %s %s", key, namespace, name)
+
 	// Get the network policy resource with this namespace/name
 	netPolObj, err := c.netPolLister.NetworkPolicies(namespace).Get(name)
 
@@ -232,9 +231,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// (TODO): think the location of this code.
 			log.Logf("Network Policy %s is not found, may be it is deleted", key)
-
 			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey
 			// #1 No item in RawNpMap, which means network policy with the cachedNetPolKey is not applied. Thus, do not need to clean up process.
 			// #2 item in RawNpMap exists, which means network policy with the cachedNetPolKey is applied . Thus, Need to clean up process.
@@ -259,13 +256,6 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
-	}
-
-	// Install default rules for kube-system and iptables
-	// (TODO): this default rules for kube-system and azure-npm chains, not directly related to passed netPolObj
-	// How to decouple this call with passed netPolObj? since it causes unnecessary re-try for the passed netPolObj
-	if err = c.initializeDefaultAzureNpmChain(); err != nil {
-		return fmt.Errorf("[syncNetPol] Error: due to %v", err)
 	}
 
 	err = c.syncAddAndUpdateNetPol(netPolObj)
@@ -332,22 +322,27 @@ func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.Ne
 		return fmt.Errorf("[deleteNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
-	delete(c.npMgr.RawNpMap, cachedNetPolKey)
-
-	// (TODO): it is not related to event - need to separate it.
-	if c.canCleanUpNpmChains() {
+	// (TODO): Can we decouple this from network policy event since if all deletions for cachedNetPolObj is successful, but UnititNpmChains() function is failed,
+	// deleteNetworkPolicy() will be executed again.
+	// Current code is funcationally ok.
+	// Even though UninitNpmChains return error, isAzureNpmChainCreated sets up false
+	// #1 when deletion event is requeued to workqueue and re-process this deleteNetworkPolicy function again, it is safe.
+	// #2 when a new network policy is added, the default Azure NPM chain is installed.
+	if c.canCleanUpAzureNpmChains() {
 		c.isAzureNpmChainCreated = false
 		if err = iptMgr.UninitNpmChains(); err != nil {
 			return fmt.Errorf("[deleteNetworkPolicy] Error: failed to uninitialize azure-npm chains with err: %s", err)
 		}
 	}
 
+	delete(c.npMgr.RawNpMap, cachedNetPolKey)
 	metrics.NumPolicies.Dec()
 	return nil
 }
 
 // Add and Update NetworkPolicy handles adding network policy to iptables.
 func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1.NetworkPolicy) error {
+	// (TODO): where do we use this?
 	timer := metrics.StartNewTimer()
 
 	var err error
@@ -366,13 +361,25 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// first delete the applied network policy,
 	// then start translating policy and install translated ipset and iptables rules into kernel
 	// For #2 and #3, the logic are the same.
+	// (TODO): can optimize logic more to reduce computations. For example, apply only difference if possible like podController
 
-	// (TODO): Need more optimizations
-	// Need to apply difference only if possible
+	// Do not need to clean up default Azure NPM chain in deleteNetworkPolicy function, if network policy object is applied.
+	// So, extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
+	// To achieve it, use flag "isSafeToCleanUpAzureNpmChain" before calling deleteNetworkPolicy function
+	c.isSafeToCleanUpAzureNpmChain = false
+	defer func() {
+		c.isSafeToCleanUpAzureNpmChain = true
+	}()
 
 	err = c.deleteNetworkPolicy(netPolObj)
 	if err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to deleteNetworkPolicy due to %s", err)
+	}
+
+	// Install this default rules for kube-system and azure-npm chains if they are not initilized.
+	// Execute initializeDefaultAzureNpmChain function first before actually starting processing network policy object.
+	if err = c.initializeDefaultAzureNpmChain(); err != nil {
+		return fmt.Errorf("[syncNetPol] Error: due to %v", err)
 	}
 
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
@@ -394,12 +401,6 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 		if err = ipsMgr.CreateList(list); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset list %s with err: %v", list, err)
 		}
-	}
-
-	// (TODO): Do we need initAllNsList??
-	// Can we move this into "initializeDefaultAzureNpmChain" function?
-	if err = c.initAllNsList(); err != nil {
-		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: initializing all-namespace ipset list with err: %v", err)
 	}
 
 	if err = c.createCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, ipsMgr); err != nil {
@@ -474,11 +475,10 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 	return nil
 }
 
-func (c *networkPolicyController) canCleanUpNpmChains() bool {
-	// (TODO): why do we have this?
-	// if !c.isSafeToCleanUpAzureNpmChain {
-	// 	return false
-	// }
+func (c *networkPolicyController) canCleanUpAzureNpmChains() bool {
+	if !c.isSafeToCleanUpAzureNpmChain {
+		return false
+	}
 
 	if len(c.npMgr.RawNpMap) == 0 {
 		return true
@@ -487,38 +487,8 @@ func (c *networkPolicyController) canCleanUpNpmChains() bool {
 	return false
 }
 
-// (TODO): copied from namespace.go - InitAllNsList syncs all-namespace ipset list
-func (c *networkPolicyController) initAllNsList() error {
-	// who adds util.KubeAllNamespacesFlag in NsMap?
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
-	for ns := range c.npMgr.NsMap {
-		if ns == util.KubeAllNamespacesFlag {
-			continue
-		}
-
-		if err := ipsMgr.AddToList(util.KubeAllNamespacesFlag, ns); err != nil {
-			return fmt.Errorf("[InitAllNsList] Error: failed to add namespace set %s to ipset list %s with err: %v", ns, util.KubeAllNamespacesFlag, err)
-		}
-	}
-	return nil
-}
-
-// (TODO): copied from namespace.go, but no component uses this function UninitAllNsList cleans all-namespace ipset list.
-func (c *networkPolicyController) unInitAllNsList() error {
-	allNs := c.npMgr.NsMap[util.KubeAllNamespacesFlag]
-	for ns := range c.npMgr.NsMap {
-		if ns == util.KubeAllNamespacesFlag {
-			continue
-		}
-
-		if err := allNs.IpsMgr.DeleteFromList(util.KubeAllNamespacesFlag, ns); err != nil {
-			return fmt.Errorf("[UninitAllNsList] Error: failed to delete namespace set %s from list %s with err: %v", ns, util.KubeAllNamespacesFlag, err)
-		}
-	}
-	return nil
-}
-
 // GetProcessedNPKey will return netpolKey
+// (TODO): will use this function when optimizing management of multiple network policies with merging and deducting multiple network policies.
 func (c *networkPolicyController) getProcessedNPKey(netPolObj *networkingv1.NetworkPolicy) string {
 	// hashSelector will never be empty
 	// (TODO): what if PodSelector is [] or nothing? - make the Unit test for this
