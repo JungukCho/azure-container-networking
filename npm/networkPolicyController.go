@@ -22,6 +22,14 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+// NamedPortOperation decides opeartion (e.g., delete or add) for named port ipset in manageNamedPortIpsets
+type IsSafeCleanUpAzureNpmChain bool
+
+const (
+	SafeToCleanUpAzureNpmChain   IsSafeCleanUpAzureNpmChain = true
+	unSafeToCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain = false
+)
+
 type networkPolicyController struct {
 	clientset          kubernetes.Interface
 	netPolLister       netpollister.NetworkPolicyLister
@@ -43,7 +51,7 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 		workqueue:                    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetPols"),
 		npMgr:                        npMgr,
 		isAzureNpmChainCreated:       false,
-		isSafeToCleanUpAzureNpmChain: false,
+		isSafeToCleanUpAzureNpmChain: true,
 	}
 
 	npInformer.Informer().AddEventHandler(
@@ -241,7 +249,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 				return nil
 			}
 
-			err = c.deleteNetworkPolicy(cachedNetPolObj)
+			err = c.deleteNetworkPolicy(cachedNetPolObj, SafeToCleanUpAzureNpmChain)
 			if err != nil {
 				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
 			}
@@ -252,7 +260,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
 	// This is early cleaning up process from updateNetPol event
 	if netPolObj.ObjectMeta.DeletionTimestamp == nil && netPolObj.ObjectMeta.DeletionGracePeriodSeconds == nil {
-		err = c.deleteNetworkPolicy(netPolObj)
+		err = c.deleteNetworkPolicy(netPolObj, SafeToCleanUpAzureNpmChain)
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
@@ -286,7 +294,7 @@ func (c *networkPolicyController) initializeDefaultAzureNpmChain() error {
 }
 
 // DeleteNetworkPolicy handles deleting network policy based on cachedNetPolKey.
-func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.NetworkPolicy) error {
+func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.NetworkPolicy, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
 	var err error
 	netpolKey, err := cache.MetaNamespaceKeyFunc(netPolObj)
 	if err != nil {
@@ -324,11 +332,12 @@ func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.Ne
 
 	// (TODO): Can we decouple this from network policy event since if all deletions for cachedNetPolObj is successful, but UnititNpmChains() function is failed,
 	// deleteNetworkPolicy() will be executed again.
-	// Current code is funcationally ok.
-	// Even though UninitNpmChains return error, isAzureNpmChainCreated sets up false
-	// #1 when deletion event is requeued to workqueue and re-process this deleteNetworkPolicy function again, it is safe.
-	// #2 when a new network policy is added, the default Azure NPM chain is installed.
-	if c.canCleanUpAzureNpmChains() {
+	// if there is only one cached network policy in RawNPMap and no immediate network policy to process,
+	// clean up default azure npm chains since the cached network policy from RawNPMap is removed.
+	if isSafeCleanUpAzureNpmChain && len(c.npMgr.RawNpMap) == 1 {
+		// Even though UninitNpmChains return error, isAzureNpmChainCreated sets up false
+		// #1 when deletion event is requeued to workqueue and re-process this deleteNetworkPolicy function again, it is safe.
+		// #2 when a new network policy is added, the default Azure NPM chain is installed.
 		c.isAzureNpmChainCreated = false
 		if err = iptMgr.UninitNpmChains(); err != nil {
 			return fmt.Errorf("[deleteNetworkPolicy] Error: failed to uninitialize azure-npm chains with err: %s", err)
@@ -363,15 +372,10 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// For #2 and #3, the logic are the same.
 	// (TODO): can optimize logic more to reduce computations. For example, apply only difference if possible like podController
 
-	// Do not need to clean up default Azure NPM chain in deleteNetworkPolicy function, if network policy object is applied.
-	// So, extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
-	// To achieve it, use flag "isSafeToCleanUpAzureNpmChain" before calling deleteNetworkPolicy function
-	c.isSafeToCleanUpAzureNpmChain = false
-	defer func() {
-		c.isSafeToCleanUpAzureNpmChain = true
-	}()
-
-	err = c.deleteNetworkPolicy(netPolObj)
+	// Do not need to clean up default Azure NPM chain in deleteNetworkPolicy function, if network policy object is applied soon.
+	// So, avoid extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
+	// To achieve it, use flag unSafeToCleanUpAzureNpmChain to indicate that the default Azure NPM chain cannot be deleted.
+	err = c.deleteNetworkPolicy(netPolObj, unSafeToCleanUpAzureNpmChain)
 	if err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to deleteNetworkPolicy due to %s", err)
 	}
@@ -473,18 +477,6 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 	}
 
 	return nil
-}
-
-func (c *networkPolicyController) canCleanUpAzureNpmChains() bool {
-	if !c.isSafeToCleanUpAzureNpmChain {
-		return false
-	}
-
-	if len(c.npMgr.RawNpMap) == 0 {
-		return true
-	}
-
-	return false
 }
 
 // GetProcessedNPKey will return netpolKey
