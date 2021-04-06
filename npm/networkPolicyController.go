@@ -39,7 +39,7 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 		clientset:                    clientset,
 		netPolLister:                 npInformer.Lister(),
 		netPolListerSynced:           npInformer.Informer().HasSynced,
-		workqueue:                    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Pods"),
+		workqueue:                    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetPols"),
 		npMgr:                        npMgr,
 		isAzureNpmChainCreated:       false,
 		isSafeToCleanUpAzureNpmChain: false,
@@ -56,37 +56,37 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 }
 
 // filter this event if we do not need to handle this event
-func (c *networkPolicyController) needSync(eventType string, obj interface{}) (string, error) {
+func (c *networkPolicyController) needSync(obj interface{}) (string, error) {
 	var key string
-	npObj, ok := obj.(*networkingv1.NetworkPolicy)
+	_, ok := obj.(*networkingv1.NetworkPolicy)
 	if !ok {
-		return key, fmt.Errorf("Need sync for NetPol : Received unexpected object type: %v", obj)
+		return key, fmt.Errorf("cannot cast obj (%v) to network policy obj", obj)
 	}
 
-	if key, err := cache.MetaNamespaceKeyFunc(obj); err != nil {
-		utilruntime.HandleError(err)
-		return key, fmt.Errorf("[needSync] Error: Network Policy is empty for %s network policy in %s with UID %s", npObj.Name, npObj.Namespace, npObj.UID)
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		return key, fmt.Errorf("error due to %s", err)
 	}
 
 	return key, nil
 }
 
 func (c *networkPolicyController) addNetPol(obj interface{}) {
-	key, err := c.needSync("ADD", obj)
+	key, err := c.needSync(obj)
 	if err != nil {
-		metrics.SendErrorLogAndMetric(util.NetpolID, "[NETPOL ADD EVENT] %s", err)
-		log.Logf("[NETPOL ADD EVENT] No need to sync this network policy due to %s", err)
+		utilruntime.HandleError(err)
 		return
 	}
 
+	// (TODO): need to remove
+	log.Logf("[NETPOL ADD EVENT] add key %s into workqueue", key)
 	c.workqueue.Add(key)
 }
 
 func (c *networkPolicyController) updateNetPol(old, new interface{}) {
-	key, err := c.needSync("UPDATE", new)
+	key, err := c.needSync(new)
 	if err != nil {
-		metrics.SendErrorLogAndMetric(util.NetpolID, "[NETPOL UPDATE EVENT] %s", err)
-		log.Logf("[NETPOL UPDATE EVENT] No need to sync this pod")
+		utilruntime.HandleError(err)
 		return
 	}
 
@@ -97,7 +97,6 @@ func (c *networkPolicyController) updateNetPol(old, new interface{}) {
 		if oldNetPol.ResourceVersion == newNetPol.ResourceVersion {
 			// Periodic resync will send update events for all known network plicies.
 			// Two different versions of the same network policy will always have different RVs.
-			log.Logf("[NETPOL UPDATE EVENT] Two network policies have the same RVs")
 			return
 		}
 	}
@@ -106,7 +105,7 @@ func (c *networkPolicyController) updateNetPol(old, new interface{}) {
 }
 
 func (c *networkPolicyController) deleteNetPol(obj interface{}) {
-	netPol, ok := obj.(*networkingv1.NetworkPolicy)
+	_, ok := obj.(*networkingv1.NetworkPolicy)
 	// DeleteFunc gets the final state of the resource (if it is known).
 	// Otherwise, it gets an object of type DeletedFinalStateUnknown.
 	// This can happen if the watch is closed and misses the delete event and
@@ -115,36 +114,38 @@ func (c *networkPolicyController) deleteNetPol(obj interface{}) {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			metrics.SendErrorLogAndMetric(util.NetpolID, "[NETPOL DELETE EVENT] Received unexpected object type: %v", obj)
+			utilruntime.HandleError(fmt.Errorf("error decoding object, invalid type"))
 			return
 		}
 
-		if netPol, ok = tombstone.Obj.(*networkingv1.NetworkPolicy); !ok {
+		if _, ok = tombstone.Obj.(*networkingv1.NetworkPolicy); !ok {
 			metrics.SendErrorLogAndMetric(util.NetpolID, "[NETPOL DELETE EVENT] Received unexpected object type (error decoding object tombstone, invalid type): %v", obj)
+			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
 			return
 		}
 	}
 
 	log.Logf("[NETPOL DELETE EVENT]")
-	var err error
 	var key string
+	var err error
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
-		metrics.SendErrorLogAndMetric(util.NetpolID, "[DeletePod] Error: Network Policy is empty for %s NetPol in %s with UID %s", netPol.Name, netPol.Namespace, netPol.UID)
 		return
 	}
+	netPolCachedKey := util.GetNSNameWithPrefix(key)
 
 	// (TODO): Reduce scope of lock later
 	c.npMgr.Lock()
 	defer c.npMgr.Unlock()
+	_, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
 
 	// If network policy object is not in the RawNpMap, we do not need to clean-up states for this network policy
 	// since netPolController did not apply for any states for this pod
-	netPolCachedKey := util.GetNSNameWithPrefix(key)
-	_, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
 	if !netPolExists {
 		return
 	}
 
+	log.Logf("[NETPOL DEL EVENT] add key %s into workqueue", key)
 	c.workqueue.Add(key)
 }
 
@@ -205,6 +206,7 @@ func (c *networkPolicyController) processNextWorkItem() bool {
 
 	if err != nil {
 		utilruntime.HandleError(err)
+		metrics.SendErrorLogAndMetric(util.NetpolID, "syncNetPol error due to %v", err)
 		return true
 	}
 
@@ -220,6 +222,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		return nil
 	}
 
+	log.Logf("SyncNetPol %s %s %s", key, namespace, name)
 	// Get the network policy resource with this namespace/name
 	netPolObj, err := c.netPolLister.NetworkPolicies(namespace).Get(name)
 
@@ -229,39 +232,45 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Logf("Network Policy %s not found, may be it is deleted", key)
-			err = c.deleteNetworkPolicy(netPolObj)
+			// (TODO): think the location of this code.
+			log.Logf("Network Policy %s is not found, may be it is deleted", key)
+
+			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey
+			// #1 No item in RawNpMap, which means network policy with the cachedNetPolKey is not applied. Thus, do not need to clean up process.
+			// #2 item in RawNpMap exists, which means network policy with the cachedNetPolKey is applied . Thus, Need to clean up process.
+			cachedNetPolKey := util.GetNSNameWithPrefix(key)
+			cachedNetPolObj, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
+			if !cachedNetPolObjExists {
+				return nil
+			}
+
+			err = c.deleteNetworkPolicy(cachedNetPolObj)
 			if err != nil {
-				// cleaning process was failed, need to requeue and retry later.
-				metrics.SendErrorLogAndMetric(util.NetpolID, "Error: %v when network policy is not found", err)
-				return fmt.Errorf("Error: %v when network policy is not found\n", err)
+				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
 			}
 		}
 		return err
 	}
 
-	// If DeletionTimestamp of the netPolObj is set, start clean-up the lastly applied states.
-	// This is early clean-up process from updateNetPol event
+	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
+	// This is early cleaning up process from updateNetPol event
 	if netPolObj.ObjectMeta.DeletionTimestamp == nil && netPolObj.ObjectMeta.DeletionGracePeriodSeconds == nil {
 		err = c.deleteNetworkPolicy(netPolObj)
 		if err != nil {
-			// cleaning process was failed, need to requeue and retry later.
-			metrics.SendErrorLogAndMetric(util.NetpolID, "Error: %v to clean up network policy when ObjectMeta.DeletionTimestamp field is set", err)
-			return fmt.Errorf("Error: %v when network policy is not found\n", err)
+			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
 	}
 
 	// Install default rules for kube-system and iptables
-	// (TODO): this default rules for kube-system and azure-npm chains, not directly related to netPolObj
+	// (TODO): this default rules for kube-system and azure-npm chains, not directly related to passed netPolObj
+	// How to decouple this call with passed netPolObj? since it causes unnecessary re-try for the passed netPolObj
 	if err = c.initializeDefaultAzureNpmChain(); err != nil {
-		metrics.SendErrorLogAndMetric(util.NetpolID, "Error: Failed to sync network policy due to %v", err)
-		return fmt.Errorf("Error: due to %s", err)
+		return fmt.Errorf("[syncNetPol] Error: due to %v", err)
 	}
 
 	err = c.syncAddAndUpdateNetPol(netPolObj)
 	if err != nil {
-		metrics.SendErrorLogAndMetric(util.NetpolID, "Error: Failed to sync network policy due to %v", err)
-		return fmt.Errorf("Failed to sync network policy due to  %s\n", err.Error())
+		return fmt.Errorf("[syncNetPol] Error due to  %s\n", err.Error())
 	}
 
 	return nil
@@ -286,7 +295,7 @@ func (c *networkPolicyController) initializeDefaultAzureNpmChain() error {
 	return nil
 }
 
-// DeleteNetworkPolicy handles deleting network policy from iptables.
+// DeleteNetworkPolicy handles deleting network policy based on cachedNetPolKey.
 func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.NetworkPolicy) error {
 	var err error
 	netpolKey, err := cache.MetaNamespaceKeyFunc(netPolObj)
@@ -323,6 +332,8 @@ func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.Ne
 		return fmt.Errorf("[deleteNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
+	delete(c.npMgr.RawNpMap, cachedNetPolKey)
+
 	// (TODO): it is not related to event - need to separate it.
 	if c.canCleanUpNpmChains() {
 		c.isAzureNpmChainCreated = false
@@ -331,7 +342,6 @@ func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.Ne
 		}
 	}
 
-	delete(c.npMgr.RawNpMap, cachedNetPolKey)
 	metrics.NumPolicies.Dec()
 	return nil
 }
@@ -466,15 +476,15 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 
 func (c *networkPolicyController) canCleanUpNpmChains() bool {
 	// (TODO): why do we have this?
-	if !c.isSafeToCleanUpAzureNpmChain {
-		return false
+	// if !c.isSafeToCleanUpAzureNpmChain {
+	// 	return false
+	// }
+
+	if len(c.npMgr.RawNpMap) == 0 {
+		return true
 	}
 
-	if len(c.npMgr.RawNpMap) > 0 {
-		return false
-	}
-
-	return true
+	return false
 }
 
 // (TODO): copied from namespace.go - InitAllNsList syncs all-namespace ipset list
