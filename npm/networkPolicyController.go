@@ -192,8 +192,8 @@ func (c *networkPolicyController) processNextWorkItem() bool {
 			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
-		// Run the syncHandler, passing it the namespace/name string of the
-		// Pod resource to be synced.
+		// Run the syncNetPol, passing it the namespace/name string of the
+		// network policy resource to be synced.
 		// TODO : may consider using "c.queue.AddAfter(key, *requeueAfter)" according to error type later
 		if err := c.syncNetPol(key); err != nil {
 			// Put the item back on the workqueue to handle any transient errors.
@@ -488,17 +488,4 @@ func (c *networkPolicyController) getProcessedNPKey(netPolObj *networkingv1.Netw
 		hashedPodSelector = netPolObj.GetNamespace() + "/" + hashedPodSelector
 	}
 	return util.GetNSNameWithPrefix(hashedPodSelector)
-}
-
-// (TODO): placeholders to avoid compile errors. Will be deleted
-func (npMgr *NetworkPolicyManager) AddNetworkPolicy(netPol *networkingv1.NetworkPolicy) error {
-	return nil
-}
-
-func (npMgr *NetworkPolicyManager) DeleteNetworkPolicy(netPol *networkingv1.NetworkPolicy) error {
-	return nil
-}
-
-func (npMgr *NetworkPolicyManager) UpdateNetworkPolicy(oldNpObj *networkingv1.NetworkPolicy, newNpObj *networkingv1.NetworkPolicy) error {
-	return nil
 }
