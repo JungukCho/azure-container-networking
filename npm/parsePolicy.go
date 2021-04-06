@@ -27,9 +27,8 @@ func isSamePolicy(old, new *networkingv1.NetworkPolicy) bool {
 }
 
 // addPolicy merges policies based on labels.
+// if namespace matches && podSelector matches, then merge two policies. Otherwise, return as is.
 func addPolicy(old, new *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {
-	// if namespace matches && podSelector matches, then merge
-	// else return as is.
 	if !reflect.DeepEqual(old.TypeMeta, new.TypeMeta) {
 		return nil, fmt.Errorf("Old and new networkpolicies don't have the same TypeMeta")
 	}
@@ -63,6 +62,7 @@ func addPolicy(old, new *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolic
 		}
 	}
 
+	// (TODO): It seems ingress and egress may have duplicated fields.
 	ingress := append(old.Spec.Ingress, new.Spec.Ingress...)
 	egress := append(old.Spec.Egress, new.Spec.Egress...)
 	addedPolicy.Spec.Ingress = ingress
