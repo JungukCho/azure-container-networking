@@ -127,7 +127,7 @@ func createNetPol() *networkingv1.NetworkPolicy {
 
 func addNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.NetworkPolicy) {
 	// simulate "network policy" add event and add network policy object to sharedInformer cache
-	f.netPolController.addNetPol(netPolObj)
+	f.netPolController.addNetworkPolicy(netPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
 		t.Logf("Add network policy: worker queue length is 0 ")
@@ -143,7 +143,7 @@ func deleteNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.Networ
 
 	// simulate network policy deletion event and delete network policy object from sharedInformer cache
 	f.kubeInformer.Networking().V1().NetworkPolicies().Informer().GetIndexer().Delete(netPolObj)
-	f.netPolController.deleteNetPol(netPolObj)
+	f.netPolController.deleteNetworkPolicy(netPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
 		t.Logf("Delete network policy: worker queue length is 0 ")
@@ -159,7 +159,7 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 
 	// simulate network policy update event and update the network policy to shared informer's cache
 	f.kubeInformer.Networking().V1().NetworkPolicies().Informer().GetIndexer().Update(netNetPolObj)
-	f.netPolController.updateNetPol(oldNetPolObj, netNetPolObj)
+	f.netPolController.updateNetworkPolicy(oldNetPolObj, netNetPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
 		t.Logf("Update Network Policy: worker queue length is 0 ")

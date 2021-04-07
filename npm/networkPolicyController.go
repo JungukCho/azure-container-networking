@@ -46,16 +46,16 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 		clientset:              clientset,
 		netPolLister:           npInformer.Lister(),
 		netPolListerSynced:     npInformer.Informer().HasSynced,
-		workqueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetPols"),
+		workqueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetworkPolicy"),
 		npMgr:                  npMgr,
 		isAzureNpmChainCreated: false,
 	}
 
 	npInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
-			AddFunc:    netPolController.addNetPol,
-			UpdateFunc: netPolController.updateNetPol,
-			DeleteFunc: netPolController.deleteNetPol,
+			AddFunc:    netPolController.addNetworkPolicy,
+			UpdateFunc: netPolController.updateNetworkPolicy,
+			DeleteFunc: netPolController.deleteNetworkPolicy,
 		},
 	)
 	return netPolController
@@ -77,7 +77,7 @@ func (c *networkPolicyController) needSync(obj interface{}) (string, error) {
 	return key, nil
 }
 
-func (c *networkPolicyController) addNetPol(obj interface{}) {
+func (c *networkPolicyController) addNetworkPolicy(obj interface{}) {
 	key, err := c.needSync(obj)
 	if err != nil {
 		utilruntime.HandleError(err)
@@ -87,7 +87,7 @@ func (c *networkPolicyController) addNetPol(obj interface{}) {
 	c.workqueue.Add(key)
 }
 
-func (c *networkPolicyController) updateNetPol(old, new interface{}) {
+func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 	key, err := c.needSync(new)
 	if err != nil {
 		utilruntime.HandleError(err)
@@ -108,7 +108,7 @@ func (c *networkPolicyController) updateNetPol(old, new interface{}) {
 	c.workqueue.Add(key)
 }
 
-func (c *networkPolicyController) deleteNetPol(obj interface{}) {
+func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 	_, ok := obj.(*networkingv1.NetworkPolicy)
 	// DeleteFunc gets the final state of the resource (if it is known).
 	// Otherwise, it gets an object of type DeletedFinalStateUnknown.
@@ -138,11 +138,10 @@ func (c *networkPolicyController) deleteNetPol(obj interface{}) {
 
 	netPolCachedKey := util.GetNSNameWithPrefix(key)
 
-	// (TODO): Reduce scope of lock later
+	// (TODO): need to decouple this lock from npMgr if possible
 	c.npMgr.Lock()
-	defer c.npMgr.Unlock()
-
 	_, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
+	defer c.npMgr.Unlock()
 	// If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
 	// since netPolController did not apply for any states for the network policy
 	if !netPolExists {
@@ -246,7 +245,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 				return nil
 			}
 
-			err = c.deleteNetworkPolicy(cachedNetPolObj, SafeToCleanUpAzureNpmChain)
+			err = c.cleanUpNetworkPolicy(cachedNetPolObj, SafeToCleanUpAzureNpmChain)
 			if err != nil {
 				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
 			}
@@ -257,7 +256,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
 	// This is early cleaning up process from updateNetPol event
 	if netPolObj.ObjectMeta.DeletionTimestamp != nil || netPolObj.ObjectMeta.DeletionGracePeriodSeconds != nil {
-		err = c.deleteNetworkPolicy(netPolObj, SafeToCleanUpAzureNpmChain)
+		err = c.cleanUpNetworkPolicy(netPolObj, SafeToCleanUpAzureNpmChain)
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
@@ -316,7 +315,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// So, avoid extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
 	// To achieve it, use flag unSafeToCleanUpAzureNpmChain to indicate that the default Azure NPM chain cannot be deleted.
 	// delete existing network policy
-	err = c.deleteNetworkPolicy(netPolObj, unSafeToCleanUpAzureNpmChain)
+	err = c.cleanUpNetworkPolicy(netPolObj, unSafeToCleanUpAzureNpmChain)
 	if err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to deleteNetworkPolicy due to %s", err)
 	}
@@ -372,11 +371,11 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 }
 
 // DeleteNetworkPolicy handles deleting network policy based on cachedNetPolKey.
-func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.NetworkPolicy, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
+func (c *networkPolicyController) cleanUpNetworkPolicy(netPolObj *networkingv1.NetworkPolicy, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
 	var err error
 	netpolKey, err := cache.MetaNamespaceKeyFunc(netPolObj)
 	if err != nil {
-		return fmt.Errorf("[deleteNetworkPolicy] Error: while running MetaNamespaceKeyFunc err: %s", err)
+		return fmt.Errorf("[cleanUpNetworkPolicy] Error: while running MetaNamespaceKeyFunc err: %s", err)
 	}
 
 	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
@@ -394,32 +393,32 @@ func (c *networkPolicyController) deleteNetworkPolicy(netPolObj *networkingv1.Ne
 	// delete iptables entries
 	for _, iptEntry := range iptEntries {
 		if err = iptMgr.Delete(iptEntry); err != nil {
-			return fmt.Errorf("[deleteNetworkPolicy] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
+			return fmt.Errorf("[cleanUpNetworkPolicy] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
 		}
 	}
 
 	// delete ipset list related to ingress CIDRs
 	if err = c.removeCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, ipsMgr); err != nil {
-		return fmt.Errorf("[deleteNetworkPolicy] Error: removeCidrsRule in due to %v", err)
+		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule in due to %v", err)
 	}
 
 	// delete ipset list related to egress CIDRs
 	if err = c.removeCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs, ipsMgr); err != nil {
-		return fmt.Errorf("[deleteNetworkPolicy] Error: removeCidrsRule out due to %v", err)
+		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
 	// (TODO): Can we decouple below logic from cachedNetPolObj since if all deletions for cachedNetPolObj are successful, but UnititNpmChains function is failed,
-	// deleteNetworkPolicy function will be executed again.
+	// cleanUpNetworkPolicy function will be executed again.
 
 	// if there is only one cached network policy in RawNPMap and no immediate network policy to process,
 	// clean up default azure npm chains since the cached network policy from RawNPMap is removed.
 	if isSafeCleanUpAzureNpmChain && len(c.npMgr.RawNpMap) == 1 {
 		// Even though UninitNpmChains return error, isAzureNpmChainCreated sets up false
-		// #1 When deletion event is requeued to workqueue and deleteNetworkPolicy function is called again, it is safe.
+		// #1 When deletion event is requeued to workqueue and cleanUpNetworkPolicy function is called again, it is safe.
 		// #2 when a new network policy is added, the default Azure NPM chain can install.
 		c.isAzureNpmChainCreated = false
 		if err = iptMgr.UninitNpmChains(); err != nil {
-			return fmt.Errorf("[deleteNetworkPolicy] Error: failed to uninitialize azure-npm chains with err: %s", err)
+			return fmt.Errorf("[cleanUpNetworkPolicy] Error: failed to uninitialize azure-npm chains with err: %s", err)
 		}
 	}
 
