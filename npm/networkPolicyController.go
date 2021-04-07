@@ -105,6 +105,19 @@ func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 		}
 	}
 
+	netPolCachedKey := util.GetNSNameWithPrefix(key)
+	c.npMgr.Lock()
+	cachedNetPolObj, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
+	c.npMgr.Unlock()
+	if netPolExists {
+		// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
+		// netPolController does not need to reconcile this update.
+		// in this updateNetworkPolicy event, newNetPol was updated with states which netPolController does not need to reconcile.
+		if isSameNetworkPolicy(cachedNetPolObj, newNetPol) {
+			return
+		}
+	}
+
 	c.workqueue.Add(key)
 }
 

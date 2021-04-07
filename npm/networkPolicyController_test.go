@@ -4,6 +4,7 @@ package npm
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
@@ -37,16 +38,20 @@ type netPolFixture struct {
 
 	netPolController *networkPolicyController
 	kubeInformer     kubeinformers.SharedInformerFactory
+
+	// to test whether unnecessary enqueuing event into workqueue was correctly filtered in eventhandler code of network policy controller
+	isEnqueueEventIntoWorkQueue bool
 }
 
 func newNetPolFixture(t *testing.T) *netPolFixture {
 	f := &netPolFixture{
-		t:            t,
-		netPolLister: []*networkingv1.NetworkPolicy{},
-		kubeobjects:  []runtime.Object{},
-		npMgr:        newNPMgr(t),
-		ipsMgr:       ipsm.NewIpsetManager(),
-		iptMgr:       iptm.NewIptablesManager(),
+		t:                           t,
+		netPolLister:                []*networkingv1.NetworkPolicy{},
+		kubeobjects:                 []runtime.Object{},
+		npMgr:                       newNPMgr(t),
+		ipsMgr:                      ipsm.NewIpsetManager(),
+		iptMgr:                      iptm.NewIptablesManager(),
+		isEnqueueEventIntoWorkQueue: true,
 	}
 
 	f.npMgr.RawNpMap = make(map[string]*networkingv1.NetworkPolicy)
@@ -133,7 +138,7 @@ func createNetPol() *networkingv1.NetworkPolicy {
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{
 						Protocol: &tcp,
-						Port:     &port8000,
+						Port:     &intstr.IntOrString{StrVal: "8000"}, // namedPort
 					}},
 				},
 			},
@@ -146,7 +151,7 @@ func addNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.NetworkPo
 	f.netPolController.addNetworkPolicy(netPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
-		t.Logf("Add network policy: worker queue length is 0 ")
+		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -162,7 +167,7 @@ func deleteNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.Networ
 	f.netPolController.deleteNetworkPolicy(netPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
-		t.Logf("Delete network policy: worker queue length is 0 ")
+		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -178,7 +183,7 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 	f.netPolController.updateNetworkPolicy(oldNetPolObj, netNetPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
-		t.Logf("Update Network Policy: worker queue length is 0 ")
+		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -186,10 +191,11 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 }
 
 type expectedNetPolValues struct {
-	expectedLenOfNsMap             int
-	expectedLenOfRawNpMap          int
-	expectedLenOfWorkQueue         int
-	expectedIsAzureNpmChainCreated bool
+	expectedLenOfNsMap                int
+	expectedLenOfRawNpMap             int
+	expectedLenOfWorkQueue            int
+	expectedIsAzureNpmChainCreated    bool
+	expectedEnqueueEventIntoWorkQueue bool
 }
 
 func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expectedNetPolValues) {
@@ -202,12 +208,16 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 			f.t.Errorf("Raw NetPol Map length = %d, want %d", got, test.expectedLenOfRawNpMap)
 		}
 
+		if got := f.netPolController.workqueue.Len(); got != test.expectedLenOfWorkQueue {
+			f.t.Errorf("Workqueue length = %d, want %d", got, test.expectedLenOfWorkQueue)
+		}
+
 		if got := f.netPolController.isAzureNpmChainCreated; got != test.expectedIsAzureNpmChainCreated {
 			f.t.Errorf("isAzureNpmChainCreated %v, want %v", got, test.expectedIsAzureNpmChainCreated)
 		}
 
-		if got := f.netPolController.workqueue.Len(); got != test.expectedLenOfWorkQueue {
-			f.t.Errorf("Workqueue length = %d, want %d", got, test.expectedLenOfWorkQueue)
+		if got := f.isEnqueueEventIntoWorkQueue; got != test.expectedEnqueueEventIntoWorkQueue {
+			f.t.Errorf("isEnqueueEventIntoWorkQueue %v, want %v", got, test.expectedEnqueueEventIntoWorkQueue)
 		}
 	}
 }
@@ -215,10 +225,12 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 func TestAddMultipleNetworkPolicies(t *testing.T) {
 	netPolObj1 := createNetPol()
 
-	// deep copy netPolObj1 and change namespace and name since current createNetPol is not flexble.
+	// deep copy netPolObj1 and change namespace, name, and porttype (to namedPort) since current createNetPol is not flexble.
 	netPolObj2 := netPolObj1.DeepCopy()
 	netPolObj2.Namespace = fmt.Sprintf("%s-new", netPolObj1.Namespace)
 	netPolObj2.Name = fmt.Sprintf("%s-new", netPolObj1.Name)
+	// namedPort
+	netPolObj2.Spec.Ingress[0].Ports[0].Port = &intstr.IntOrString{StrVal: fmt.Sprintf("%s", netPolObj2.Name)}
 
 	f := newNetPolFixture(t)
 	f.netPolLister = append(f.netPolLister, netPolObj1, netPolObj2)
@@ -231,10 +243,11 @@ func TestAddMultipleNetworkPolicies(t *testing.T) {
 	addNetPol(t, f, netPolObj2)
 
 	testCases := []expectedNetPolValues{
-		{1, 2, 0, true},
+		{1, 2, 0, true, true},
 	}
 	checkNetPolTestResult("TestAddMultipleNetPols", f, testCases)
 }
+
 func TestAddNetworkPolicy(t *testing.T) {
 	netPolObj := createNetPol()
 
@@ -247,7 +260,7 @@ func TestAddNetworkPolicy(t *testing.T) {
 
 	addNetPol(t, f, netPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true},
+		{1, 1, 0, true, true},
 	}
 	checkNetPolTestResult("TestAddNetPol", f, testCases)
 }
@@ -264,13 +277,37 @@ func TestDeleteNetworkPolicy(t *testing.T) {
 
 	deleteNetPol(t, f, netPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 0, 0, false},
+		{1, 0, 0, false, true},
 	}
 	checkNetPolTestResult("TestDelNetPol", f, testCases)
 }
 
-// Need to make more test cases
+// this unit test is for the case where states of network policy are changed, but network policy controller does not need to reconcile.
+// Check it with expectedEnqueueEventIntoWorkQueue variable.
+// (TODO): What are the fieldS which cause this case in a real world? Need to know it.
 func TestUpdateNetworkPolicy(t *testing.T) {
+	oldNetPolObj := createNetPol()
+
+	f := newNetPolFixture(t)
+	f.netPolLister = append(f.netPolLister, oldNetPolObj)
+	f.kubeobjects = append(f.kubeobjects, oldNetPolObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newNetPolController(stopCh)
+
+	newNetPolObj := oldNetPolObj.DeepCopy()
+	// oldNetPolObj.ResourceVersion value is "0"
+	newRV, _ := strconv.Atoi(oldNetPolObj.ResourceVersion)
+	newNetPolObj.ResourceVersion = fmt.Sprintf("%d", newRV+1)
+
+	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
+	testCases := []expectedNetPolValues{
+		{1, 1, 0, true, false},
+	}
+	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
+}
+
+func TestLabelUpdateNetworkPolicy(t *testing.T) {
 	oldNetPolObj := createNetPol()
 
 	f := newNetPolFixture(t)
@@ -288,10 +325,13 @@ func TestUpdateNetworkPolicy(t *testing.T) {
 			"new": "test",
 		},
 	}
-
+	// oldNetPolObj.ResourceVersion value is "0"
+	newRV, _ := strconv.Atoi(oldNetPolObj.ResourceVersion)
+	newNetPolObj.ResourceVersion = fmt.Sprintf("%d", newRV+1)
 	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
+
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true},
+		{1, 1, 0, true, true},
 	}
 	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
 }

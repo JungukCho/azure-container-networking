@@ -10,6 +10,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// compare all fields including name of two network policies, which network policy controller need to care about.
+func isSameNetworkPolicy(old, new *networkingv1.NetworkPolicy) bool {
+	if old.ObjectMeta.Name != new.ObjectMeta.Name {
+		return false
+	}
+	return isSamePolicy(old, new)
+}
+
+// (TODO): isSamePolicy function does not compare name of two network policies since trying to reduce the number of rules if below three conditions are the same.
+// Will optimize networkPolicyController code with addPolicy and deductPolicy functions if possible. Refer to https://github.com/Azure/azure-container-networking/pull/390
 func isSamePolicy(old, new *networkingv1.NetworkPolicy) bool {
 	if !reflect.DeepEqual(old.TypeMeta, new.TypeMeta) {
 		return false
