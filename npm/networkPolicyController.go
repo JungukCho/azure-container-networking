@@ -154,7 +154,7 @@ func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 	// (TODO): need to decouple this lock from npMgr if possible
 	c.npMgr.Lock()
 	_, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
-	defer c.npMgr.Unlock()
+	c.npMgr.Unlock()
 	// If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
 	// since netPolController did not apply for any states for the network policy
 	if !netPolExists {
