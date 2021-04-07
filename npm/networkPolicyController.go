@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Azure/azure-container-networking/log"
 	"github.com/Azure/azure-container-networking/npm/ipsm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
@@ -20,6 +19,7 @@ import (
 	netpollister "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 )
 
 // IsSafeCleanUpAzureNpmChain is used to indicate whether default Azure NPM chain can be safely deleted or not.
@@ -168,14 +168,14 @@ func (c *networkPolicyController) Run(threadiness int, stopCh <-chan struct{}) e
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
-	log.Logf("Starting Network Policy %d worker(s)", threadiness)
+	klog.Infof("Starting Network Policy %d worker(s)", threadiness)
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	log.Logf("Started Network Policy %d worker(s)", threadiness)
+	klog.Infof("Started Network Policy %d worker(s)", threadiness)
 	<-stopCh
-	log.Logf("Shutting down Network Policy workers")
+	klog.Info("Shutting down Network Policy workers")
 
 	return nil
 }
@@ -215,7 +215,7 @@ func (c *networkPolicyController) processNextWorkItem() bool {
 		// Finally, if no error occurs we Forget this item so it does not
 		// get queued again until another change happens.
 		c.workqueue.Forget(obj)
-		log.Logf("Successfully synced '%s'", key)
+		klog.Infof("Successfully synced '%s'", key)
 		return nil
 	}(obj)
 
@@ -237,8 +237,6 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		return nil
 	}
 
-	log.Logf("SyncNetPol %s %s %s", key, namespace, name)
-
 	// Get the network policy resource with this namespace/name
 	netPolObj, err := c.netPolLister.NetworkPolicies(namespace).Get(name)
 
@@ -248,7 +246,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Logf("Network Policy %s is not found, may be it is deleted", key)
+			klog.Infof("Network Policy %s is not found, may be it is deleted", key)
 			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey
 			// #1 No item in RawNpMap, which means network policy with the cachedNetPolKey is not applied. Thus, do not need to clean up process.
 			// #2 item in RawNpMap exists, which means network policy with the cachedNetPolKey is applied . Thus, Need to clean up process.
@@ -343,13 +341,13 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	iptMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].iptMgr
 	sets, namedPorts, lists, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(netPolObj)
 	for _, set := range sets {
-		log.Logf("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
+		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
 		if err = ipsMgr.CreateSet(set, append([]string{util.IpsetNetHashFlag})); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset %s with err: %v", set, err)
 		}
 	}
 	for _, set := range namedPorts {
-		log.Logf("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
+		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
 		if err = ipsMgr.CreateSet(set, append([]string{util.IpsetIPPortHashFlag})); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset named port %s with err: %v", set, err)
 		}
@@ -448,7 +446,7 @@ func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, n
 			continue
 		}
 		setName := policyName + "-in-ns-" + ns + "-" + strconv.Itoa(i) + ingressOrEgress
-		log.Logf("Creating set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
+		klog.Infof("Creating set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
 		if err := ipsMgr.CreateSet(setName, spec); err != nil {
 			return fmt.Errorf("[createCidrsRule] Error: creating ipset %s with err: %v", ipCidrSet, err)
 		}
@@ -479,7 +477,7 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 			continue
 		}
 		setName := policyName + "-in-ns-" + ns + "-" + strconv.Itoa(i) + ingressOrEgress
-		log.Logf("Delete set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
+		klog.Infof("Delete set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
 		if err := ipsMgr.DeleteSet(setName); err != nil {
 			return fmt.Errorf("[removeCidrsRule] deleting ipset %s with err: %v", ipCidrSet, err)
 		}
