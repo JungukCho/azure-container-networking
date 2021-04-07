@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
+	"github.com/Azure/azure-container-networking/npm/iptm"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -30,8 +31,10 @@ type netPolFixture struct {
 	kubeobjects []runtime.Object
 
 	// (TODO) will remove npMgr if possible
-	npMgr            *NetworkPolicyManager
-	ipsMgr           *ipsm.IpsetManager
+	npMgr  *NetworkPolicyManager
+	ipsMgr *ipsm.IpsetManager
+	iptMgr *iptm.IptablesManager
+
 	netPolController *networkPolicyController
 	kubeInformer     kubeinformers.SharedInformerFactory
 }
@@ -43,6 +46,7 @@ func newNetPolFixture(t *testing.T) *netPolFixture {
 		kubeobjects:  []runtime.Object{},
 		npMgr:        newNPMgr(t),
 		ipsMgr:       ipsm.NewIpsetManager(),
+		iptMgr:       iptm.NewIptablesManager(),
 	}
 
 	f.npMgr.RawNpMap = make(map[string]*networkingv1.NetworkPolicy)
@@ -63,18 +67,30 @@ func (f *netPolFixture) newNetPolController(stopCh chan struct{}) {
 	f.kubeInformer.Start(stopCh)
 }
 
-func (f *netPolFixture) ipSetSave(ipsetConfigFile string) {
+func (f *netPolFixture) saveIpTables(iptablesConfigFile string) {
+	if err := f.iptMgr.Save(iptablesConfigFile); err != nil {
+		f.t.Errorf("Failed to save iptables rules")
+	}
+}
+
+func (f *netPolFixture) restoreIpTables(iptablesConfigFile string) {
+	if err := f.iptMgr.Restore(iptablesConfigFile); err != nil {
+		f.t.Errorf("Failed to restore iptables rules")
+	}
+}
+
+func (f *netPolFixture) saveIpSet(ipsetConfigFile string) {
 	//  call /sbin/ipset save -file /var/log/ipset-test.conf
 	f.t.Logf("Start storing ipset to %s", ipsetConfigFile)
 	if err := f.ipsMgr.Save(ipsetConfigFile); err != nil {
-		f.t.Errorf("ipSetSave failed @ ipsMgr.Save")
+		f.t.Errorf("Failed to save ipsets")
 	}
 }
-func (f *netPolFixture) ipSetRestore(ipsetConfigFile string) {
+func (f *netPolFixture) restoreIpSet(ipsetConfigFile string) {
 	//  call /sbin/ipset restore -file /var/log/ipset-test.conf
 	f.t.Logf("Start re-storing ipset to %s", ipsetConfigFile)
 	if err := f.ipsMgr.Restore(ipsetConfigFile); err != nil {
-		f.t.Errorf("ipSetRestore failed @ ipsMgr.Restore")
+		f.t.Errorf("failed to restore ipsets")
 	}
 }
 
