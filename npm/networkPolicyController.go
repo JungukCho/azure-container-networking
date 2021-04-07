@@ -477,14 +477,14 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 
 // GetProcessedNPKey will return netpolKey
 // (TODO): will use this function when optimizing management of multiple network policies with merging and deducting multiple network policies.
-func (c *networkPolicyController) getProcessedNPKey(netPolObj *networkingv1.NetworkPolicy) string {
-	// hashSelector will never be empty
-	// (TODO): what if PodSelector is [] or nothing? - make the Unit test for this
-	hashedPodSelector := HashSelector(&netPolObj.Spec.PodSelector)
+// func (c *networkPolicyController) getProcessedNPKey(netPolObj *networkingv1.NetworkPolicy) string {
+// 	// hashSelector will never be empty
+// 	// (TODO): what if PodSelector is [] or nothing? - make the Unit test for this
+// 	hashedPodSelector := HashSelector(&netPolObj.Spec.PodSelector)
 
-	// (TODO): any chance to have namespace has zero length?
-	if len(netPolObj.GetNamespace()) > 0 {
-		hashedPodSelector = netPolObj.GetNamespace() + "/" + hashedPodSelector
-	}
-	return util.GetNSNameWithPrefix(hashedPodSelector)
-}
+// 	// (TODO): any chance to have namespace has zero length?
+// 	if len(netPolObj.GetNamespace()) > 0 {
+// 		hashedPodSelector = netPolObj.GetNamespace() + "/" + hashedPodSelector
+// 	}
+// 	return util.GetNSNameWithPrefix(hashedPodSelector)
+// }
