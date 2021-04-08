@@ -303,8 +303,9 @@ func (c *networkPolicyController) initializeDefaultAzureNpmChain() error {
 
 // syncAddAndUpdateNetPol handles a new network policy or an updated network policy object triggered by add and update events
 func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1.NetworkPolicy) error {
-	// (TODO): where do we use this?
+	// This timer measures execution time to run this function regardless of success or failure cases
 	timer := metrics.StartNewTimer()
+	defer timer.StopAndRecord(metrics.AddPolicyExecTime)
 
 	var err error
 	netpolKey, err := cache.MetaNamespaceKeyFunc(netPolObj)
@@ -336,6 +337,12 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	if err = c.initializeDefaultAzureNpmChain(); err != nil {
 		return fmt.Errorf("[syncNetPol] Error: due to %v", err)
 	}
+
+	// Cache network object first before applying ipsets and iptables.
+	// If error happens while applying ipsets and iptables,
+	// the key is re-queued in workqueue and process this function again, which eventually meets desired states of network policy
+	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
+	c.npMgr.RawNpMap[cachedNetPolKey] = netPolObj
 
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 	iptMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].iptMgr
@@ -372,12 +379,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 		}
 	}
 
-	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
-	c.npMgr.RawNpMap[cachedNetPolKey] = netPolObj
-
 	metrics.NumPolicies.Inc()
-	// (TODO): may better to use defer?
-	timer.StopAndRecord(metrics.AddPolicyExecTime)
 	return nil
 }
 
@@ -418,23 +420,23 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolObj *networkingv1.N
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
-	// (TODO): Can we decouple below logic from cachedNetPolObj since if all deletions for cachedNetPolObj are successful, but UnititNpmChains function is failed,
-	// cleanUpNetworkPolicy function will be executed again.
+	// Sucess to clean up ipset and iptables operations in kernel and delete the cached network policy from RawNpMap
+	delete(c.npMgr.RawNpMap, cachedNetPolKey)
+	metrics.NumPolicies.Dec()
 
-	// if there is only one cached network policy in RawNPMap and no immediate network policy to process,
-	// clean up default azure npm chains since the cached network policy from RawNPMap is removed.
-	if isSafeCleanUpAzureNpmChain && len(c.npMgr.RawNpMap) == 1 {
-		// Even though UninitNpmChains return error, isAzureNpmChainCreated sets up false
-		// #1 When deletion event is requeued to workqueue and cleanUpNetworkPolicy function is called again, it is safe.
-		// #2 when a new network policy is added, the default Azure NPM chain can install.
+	// If there is no cached network policy in RawNPMap anymore and no immediate network policy to process, start cleaning up default azure npm chains
+	// However, UninitNpmChains function is failed which left failed states and will not retry, but functionally it is ok.
+	// (TODO): Ideally, need to decouple cleaning-up default azure npm chains from "network policy deletion" event.
+	if isSafeCleanUpAzureNpmChain && len(c.npMgr.RawNpMap) == 0 {
+		// Even though UninitNpmChains function returns error, isAzureNpmChainCreated sets up false.
+		// So, when a new network policy is added, the "default Azure NPM chain" can be installed.
 		c.isAzureNpmChainCreated = false
 		if err = iptMgr.UninitNpmChains(); err != nil {
-			return fmt.Errorf("[cleanUpNetworkPolicy] Error: failed to uninitialize azure-npm chains with err: %s", err)
+			utilruntime.HandleError(fmt.Errorf("Error: failed to uninitialize azure-npm chains with err: %s", err))
+			return nil
 		}
 	}
 
-	delete(c.npMgr.RawNpMap, cachedNetPolKey)
-	metrics.NumPolicies.Dec()
 	return nil
 }
 
