@@ -251,12 +251,12 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 			// #1 No item in RawNpMap, which means network policy with the cachedNetPolKey is not applied. Thus, do not need to clean up process.
 			// #2 item in RawNpMap exists, which means network policy with the cachedNetPolKey is applied . Thus, Need to clean up process.
 			cachedNetPolKey := util.GetNSNameWithPrefix(key)
-			cachedNetPolObj, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
+			_, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
 			if !cachedNetPolObjExists {
 				return nil
 			}
 
-			err = c.cleanUpNetworkPolicy(cachedNetPolObj, SafeToCleanUpAzureNpmChain)
+			err = c.cleanUpNetworkPolicy(cachedNetPolKey, SafeToCleanUpAzureNpmChain)
 			if err != nil {
 				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
 			}
@@ -267,7 +267,8 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
 	// This is early cleaning up process from updateNetPol event
 	if netPolObj.ObjectMeta.DeletionTimestamp != nil || netPolObj.ObjectMeta.DeletionGracePeriodSeconds != nil {
-		err = c.cleanUpNetworkPolicy(netPolObj, SafeToCleanUpAzureNpmChain)
+		cachedNetPolKey := util.GetNSNameWithPrefix(key)
+		err = c.cleanUpNetworkPolicy(cachedNetPolKey, SafeToCleanUpAzureNpmChain)
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
@@ -327,7 +328,8 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// So, avoid extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
 	// To achieve it, use flag unSafeToCleanUpAzureNpmChain to indicate that the default Azure NPM chain cannot be deleted.
 	// delete existing network policy
-	err = c.cleanUpNetworkPolicy(netPolObj, unSafeToCleanUpAzureNpmChain)
+	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
+	err = c.cleanUpNetworkPolicy(cachedNetPolKey, unSafeToCleanUpAzureNpmChain)
 	if err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to deleteNetworkPolicy due to %s", err)
 	}
@@ -341,7 +343,6 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// Cache network object first before applying ipsets and iptables.
 	// If error happens while applying ipsets and iptables,
 	// the key is re-queued in workqueue and process this function again, which eventually meets desired states of network policy
-	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
 	c.npMgr.RawNpMap[cachedNetPolKey] = netPolObj
 
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
@@ -384,14 +385,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 }
 
 // DeleteNetworkPolicy handles deleting network policy based on cachedNetPolKey.
-func (c *networkPolicyController) cleanUpNetworkPolicy(netPolObj *networkingv1.NetworkPolicy, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
-	var err error
-	netpolKey, err := cache.MetaNamespaceKeyFunc(netPolObj)
-	if err != nil {
-		return fmt.Errorf("[cleanUpNetworkPolicy] Error: while running MetaNamespaceKeyFunc err: %s", err)
-	}
-
-	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
+func (c *networkPolicyController) cleanUpNetworkPolicy(cachedNetPolKey string, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
 	cachedNetPolObj, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
 	// if there is no applied network policy with the cachedNetPolKey, do not need to clean up process.
 	if !cachedNetPolObjExists {
@@ -403,6 +397,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolObj *networkingv1.N
 	// translate policy from "cachedNetPolObj"
 	_, _, _, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(cachedNetPolObj)
 
+	var err error
 	// delete iptables entries
 	for _, iptEntry := range iptEntries {
 		if err = iptMgr.Delete(iptEntry); err != nil {
@@ -411,12 +406,12 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolObj *networkingv1.N
 	}
 
 	// delete ipset list related to ingress CIDRs
-	if err = c.removeCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, ipsMgr); err != nil {
+	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs, ipsMgr); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule in due to %v", err)
 	}
 
 	// delete ipset list related to egress CIDRs
-	if err = c.removeCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs, ipsMgr); err != nil {
+	if err = c.removeCidrsRule("out", cachedNetPolObj.Name, cachedNetPolObj.Namespace, egressIPCidrs, ipsMgr); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
