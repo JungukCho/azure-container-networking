@@ -57,8 +57,8 @@ type NetworkPolicyManager struct {
 	NodeName       string
 	NsMap          map[string]*Namespace                  // Key is ns-<nsname>
 	PodMap         map[string]*NpmPod                     // Key is <nsname>/<podname>
-	RawNpMap       map[string]*networkingv1.NetworkPolicy // Key is ns-<nsname>/<policyname>
-	ProcessedNpMap map[string]*networkingv1.NetworkPolicy // Key is ns-<nsname>/<podSelectorHash>
+	RawNpMap       map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
+	ProcessedNpMap map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<podSelectorHash>
 
 	clusterState telemetry.ClusterState
 	version      string
@@ -270,7 +270,7 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 	npMgr.nameSpaceController = NewNameSpaceController(nsInformer, clientset, npMgr)
 
 	// create network policy controller
-	npMgr.netPolController = NewNetworkPolicyController(informerFactory.Networking().V1().NetworkPolicies(), clientset, npMgr)
+	npMgr.netPolController = NewNetworkPolicyController(npInformer, clientset, npMgr)
 
 	return npMgr
 }

@@ -9,6 +9,8 @@ import (
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
 	"github.com/Azure/azure-container-networking/npm/iptm"
+	"github.com/Azure/azure-container-networking/npm/metrics"
+	"github.com/Azure/azure-container-networking/npm/metrics/promutil"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -196,6 +198,11 @@ type expectedNetPolValues struct {
 	expectedLenOfWorkQueue            int
 	expectedIsAzureNpmChainCreated    bool
 	expectedEnqueueEventIntoWorkQueue bool
+	// prometheus metrics
+	expectedNumPoliciesMetrics                  int
+	expectedNumPoliciesMetricsError             error
+	expectedCountOfAddPolicyExecTimeMetric      int
+	expectedCountOfAddPolicyExecTimeMetricError error
 }
 
 func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expectedNetPolValues) {
@@ -218,6 +225,23 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 
 		if got := f.isEnqueueEventIntoWorkQueue; got != test.expectedEnqueueEventIntoWorkQueue {
 			f.t.Errorf("isEnqueueEventIntoWorkQueue %v, want %v", got, test.expectedEnqueueEventIntoWorkQueue)
+		}
+
+		// Check prometheus metrics
+		expectedNumPoliciesMetrics, expectedNumPoliciesMetricsError := promutil.GetValue(metrics.NumPolicies)
+		if expectedNumPoliciesMetrics != test.expectedNumPoliciesMetrics {
+			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedNumPoliciesMetrics, test.expectedNumPoliciesMetrics)
+		}
+		if expectedNumPoliciesMetricsError != test.expectedNumPoliciesMetricsError {
+			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedNumPoliciesMetricsError, test.expectedNumPoliciesMetricsError)
+		}
+
+		expectedCountOfAddPolicyExecTimeMetric, expectedCountOfAddPolicyExecTimeMetricError := promutil.GetCountValue(metrics.AddPolicyExecTime)
+		if expectedCountOfAddPolicyExecTimeMetric != test.expectedCountOfAddPolicyExecTimeMetric {
+			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedCountOfAddPolicyExecTimeMetric, test.expectedCountOfAddPolicyExecTimeMetric)
+		}
+		if expectedCountOfAddPolicyExecTimeMetricError != test.expectedCountOfAddPolicyExecTimeMetricError {
+			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedCountOfAddPolicyExecTimeMetricError, test.expectedCountOfAddPolicyExecTimeMetricError)
 		}
 	}
 }
@@ -243,7 +267,7 @@ func TestAddMultipleNetworkPolicies(t *testing.T) {
 	addNetPol(t, f, netPolObj2)
 
 	testCases := []expectedNetPolValues{
-		{1, 2, 0, true, true},
+		{1, 2, 0, true, true, 2, nil, 2, nil},
 	}
 	checkNetPolTestResult("TestAddMultipleNetPols", f, testCases)
 }
@@ -260,8 +284,9 @@ func TestAddNetworkPolicy(t *testing.T) {
 
 	addNetPol(t, f, netPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, true},
+		{1, 1, 0, true, true, 1, nil, 1, nil},
 	}
+
 	checkNetPolTestResult("TestAddNetPol", f, testCases)
 }
 
@@ -277,14 +302,13 @@ func TestDeleteNetworkPolicy(t *testing.T) {
 
 	deleteNetPol(t, f, netPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 0, 0, false, true},
+		{1, 0, 0, false, true, 0, nil, 1, nil},
 	}
 	checkNetPolTestResult("TestDelNetPol", f, testCases)
 }
 
 // this unit test is for the case where states of network policy are changed, but network policy controller does not need to reconcile.
 // Check it with expectedEnqueueEventIntoWorkQueue variable.
-// (TODO): What are the fieldS which cause this case in a real world? Need to know it.
 func TestUpdateNetworkPolicy(t *testing.T) {
 	oldNetPolObj := createNetPol()
 
@@ -302,7 +326,7 @@ func TestUpdateNetworkPolicy(t *testing.T) {
 
 	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, false},
+		{1, 1, 0, true, false, 1, nil, 1, nil},
 	}
 	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
 }
@@ -331,7 +355,7 @@ func TestLabelUpdateNetworkPolicy(t *testing.T) {
 	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
 
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, true},
+		{1, 1, 0, true, true, 1, nil, 2, nil},
 	}
 	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
 }

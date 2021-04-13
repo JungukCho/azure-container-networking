@@ -61,8 +61,9 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 	return netPolController
 }
 
-// needSync checks whether the obj is valid network policy object.
-func (c *networkPolicyController) needSync(obj interface{}) (string, error) {
+// getNetworkPolicyKey returns namespace/name of network policy object if it is valid network policy object and has valid namespace/name.
+// If not, it returns error.
+func (c *networkPolicyController) getNetworkPolicyKey(obj interface{}) (string, error) {
 	var key string
 	_, ok := obj.(*networkingv1.NetworkPolicy)
 	if !ok {
@@ -78,23 +79,23 @@ func (c *networkPolicyController) needSync(obj interface{}) (string, error) {
 }
 
 func (c *networkPolicyController) addNetworkPolicy(obj interface{}) {
-	key, err := c.needSync(obj)
+	netPolkey, err := c.getNetworkPolicyKey(obj)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
 
-	c.workqueue.Add(key)
+	c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
-	key, err := c.needSync(new)
+	netPolkey, err := c.getNetworkPolicyKey(new)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
 
-	// needSync already checked validation of casting new network policy.
+	// new network policy object is already checked validation by calling getNetworkPolicyKey function.
 	newNetPol, _ := new.(*networkingv1.NetworkPolicy)
 	oldNetPol, ok := old.(*networkingv1.NetworkPolicy)
 	if ok {
@@ -105,9 +106,8 @@ func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 		}
 	}
 
-	netPolCachedKey := util.GetNSNameWithPrefix(key)
 	c.npMgr.Lock()
-	cachedNetPolObj, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
+	cachedNetPolObj, netPolExists := c.npMgr.RawNpMap[netPolkey]
 	c.npMgr.Unlock()
 	if netPolExists {
 		// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
@@ -118,7 +118,7 @@ func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 		}
 	}
 
-	c.workqueue.Add(key)
+	c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
@@ -142,18 +142,16 @@ func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 		}
 	}
 
-	var key string
+	var netPolkey string
 	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+	if netPolkey, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
 
-	netPolCachedKey := util.GetNSNameWithPrefix(key)
-
 	// (TODO): need to decouple this lock from npMgr if possible
 	c.npMgr.Lock()
-	_, netPolExists := c.npMgr.RawNpMap[netPolCachedKey]
+	_, netPolExists := c.npMgr.RawNpMap[netPolkey]
 	c.npMgr.Unlock()
 	// If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
 	// since netPolController did not apply for any states for the network policy
@@ -161,7 +159,7 @@ func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 		return
 	}
 
-	c.workqueue.Add(key)
+	c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) Run(threadiness int, stopCh <-chan struct{}) error {
@@ -247,13 +245,13 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("Network Policy %s is not found, may be it is deleted", key)
-			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey.
-			// cleanUpNetworkPolicy method will take care of the deletion of a cached network policy if the cached network policy exists with cachedNetPolKey in our RawNpMap cache.
-			cachedNetPolKey := util.GetNSNameWithPrefix(key)
-			err = c.cleanUpNetworkPolicy(cachedNetPolKey, SafeToCleanUpAzureNpmChain)
+			// netPolObj is not found, but should need to check the RawNpMap cache with key.
+			// cleanUpNetworkPolicy method will take care of the deletion of a cached network policy if the cached network policy exists with key in our RawNpMap cache.
+			err = c.cleanUpNetworkPolicy(key, SafeToCleanUpAzureNpmChain)
 			if err != nil {
 				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
 			}
+			return err
 		}
 		return err
 	}
@@ -261,8 +259,7 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	// If DeletionTimestamp of the netPolObj is set, start cleaning up lastly applied states.
 	// This is early cleaning up process from updateNetPol event
 	if netPolObj.ObjectMeta.DeletionTimestamp != nil || netPolObj.ObjectMeta.DeletionGracePeriodSeconds != nil {
-		cachedNetPolKey := util.GetNSNameWithPrefix(key)
-		err = c.cleanUpNetworkPolicy(cachedNetPolKey, SafeToCleanUpAzureNpmChain)
+		err = c.cleanUpNetworkPolicy(key, SafeToCleanUpAzureNpmChain)
 		if err != nil {
 			return fmt.Errorf("Error: %v when ObjectMeta.DeletionTimestamp field is set\n", err)
 		}
@@ -322,8 +319,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// So, avoid extra overhead to install default Azure NPM chain in initializeDefaultAzureNpmChain function.
 	// To achieve it, use flag unSafeToCleanUpAzureNpmChain to indicate that the default Azure NPM chain cannot be deleted.
 	// delete existing network policy
-	cachedNetPolKey := util.GetNSNameWithPrefix(netpolKey)
-	err = c.cleanUpNetworkPolicy(cachedNetPolKey, unSafeToCleanUpAzureNpmChain)
+	err = c.cleanUpNetworkPolicy(netpolKey, unSafeToCleanUpAzureNpmChain)
 	if err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to deleteNetworkPolicy due to %s", err)
 	}
@@ -337,7 +333,8 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// Cache network object first before applying ipsets and iptables.
 	// If error happens while applying ipsets and iptables,
 	// the key is re-queued in workqueue and process this function again, which eventually meets desired states of network policy
-	c.npMgr.RawNpMap[cachedNetPolKey] = netPolObj
+	c.npMgr.RawNpMap[netpolKey] = netPolObj
+	metrics.NumPolicies.Inc()
 
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 	iptMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].iptMgr
@@ -374,14 +371,13 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 		}
 	}
 
-	metrics.NumPolicies.Inc()
 	return nil
 }
 
-// DeleteNetworkPolicy handles deleting network policy based on cachedNetPolKey.
-func (c *networkPolicyController) cleanUpNetworkPolicy(cachedNetPolKey string, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
-	cachedNetPolObj, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
-	// if there is no applied network policy with the cachedNetPolKey, do not need to clean up process.
+// DeleteNetworkPolicy handles deleting network policy based on netPolKey.
+func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
+	cachedNetPolObj, cachedNetPolObjExists := c.npMgr.RawNpMap[netPolKey]
+	// if there is no applied network policy with the netPolKey, do not need to clean up process.
 	if !cachedNetPolObjExists {
 		return nil
 	}
@@ -410,7 +406,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(cachedNetPolKey string, i
 	}
 
 	// Sucess to clean up ipset and iptables operations in kernel and delete the cached network policy from RawNpMap
-	delete(c.npMgr.RawNpMap, cachedNetPolKey)
+	delete(c.npMgr.RawNpMap, netPolKey)
 	metrics.NumPolicies.Dec()
 
 	// If there is no cached network policy in RawNPMap anymore and no immediate network policy to process, start cleaning up default azure npm chains
