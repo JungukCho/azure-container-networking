@@ -199,8 +199,8 @@ type expectedNetPolValues struct {
 	expectedIsAzureNpmChainCreated    bool
 	expectedEnqueueEventIntoWorkQueue bool
 	// prometheus metrics
-	expectedNumPoliciesMetrics                  int
-	expectedNumPoliciesMetricsError             error
+	expectedNumPoliciesMetric                   int
+	expectedNumPoliciesMetricError              error
 	expectedCountOfAddPolicyExecTimeMetric      int
 	expectedCountOfAddPolicyExecTimeMetricError error
 }
@@ -229,11 +229,11 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 
 		// Check prometheus metrics
 		expectedNumPoliciesMetrics, expectedNumPoliciesMetricsError := promutil.GetValue(metrics.NumPolicies)
-		if expectedNumPoliciesMetrics != test.expectedNumPoliciesMetrics {
-			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedNumPoliciesMetrics, test.expectedNumPoliciesMetrics)
+		if expectedNumPoliciesMetrics != test.expectedNumPoliciesMetric {
+			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedNumPoliciesMetrics, test.expectedNumPoliciesMetric)
 		}
-		if expectedNumPoliciesMetricsError != test.expectedNumPoliciesMetricsError {
-			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedNumPoliciesMetricsError, test.expectedNumPoliciesMetricsError)
+		if expectedNumPoliciesMetricsError != test.expectedNumPoliciesMetricError {
+			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedNumPoliciesMetricsError, test.expectedNumPoliciesMetricError)
 		}
 
 		expectedCountOfAddPolicyExecTimeMetric, expectedCountOfAddPolicyExecTimeMetricError := promutil.GetCountValue(metrics.AddPolicyExecTime)
