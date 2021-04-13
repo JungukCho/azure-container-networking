@@ -57,6 +57,11 @@ func newNetPolFixture(t *testing.T) *netPolFixture {
 	}
 
 	f.npMgr.RawNpMap = make(map[string]*networkingv1.NetworkPolicy)
+
+	// While running "make test-all", metrics hold states which was executed in previous unit test.
+	// (TODO): Need to fix to remove this fundamental dependency
+	metrics.ReInitializeAllMetrics()
+
 	return f
 }
 
@@ -230,18 +235,18 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 		// Check prometheus metrics
 		expectedNumPoliciesMetrics, expectedNumPoliciesMetricsError := promutil.GetValue(metrics.NumPolicies)
 		if expectedNumPoliciesMetrics != test.expectedNumPoliciesMetric {
-			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedNumPoliciesMetrics, test.expectedNumPoliciesMetric)
+			f.t.Errorf("NumPolicies metric length = %d, want %d", expectedNumPoliciesMetrics, test.expectedNumPoliciesMetric)
 		}
 		if expectedNumPoliciesMetricsError != test.expectedNumPoliciesMetricError {
-			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedNumPoliciesMetricsError, test.expectedNumPoliciesMetricError)
+			f.t.Errorf("NumPolicies metric error = %s, want %s", expectedNumPoliciesMetricsError, test.expectedNumPoliciesMetricError)
 		}
 
 		expectedCountOfAddPolicyExecTimeMetric, expectedCountOfAddPolicyExecTimeMetricError := promutil.GetCountValue(metrics.AddPolicyExecTime)
 		if expectedCountOfAddPolicyExecTimeMetric != test.expectedCountOfAddPolicyExecTimeMetric {
-			f.t.Errorf("NumPolicies metrics length = %d, want %d", expectedCountOfAddPolicyExecTimeMetric, test.expectedCountOfAddPolicyExecTimeMetric)
+			f.t.Errorf("CountOfAddPolicyExecTime metric length = %d, want %d", expectedCountOfAddPolicyExecTimeMetric, test.expectedCountOfAddPolicyExecTimeMetric)
 		}
 		if expectedCountOfAddPolicyExecTimeMetricError != test.expectedCountOfAddPolicyExecTimeMetricError {
-			f.t.Errorf("NumPolicies metrics error = %s, want %s", expectedCountOfAddPolicyExecTimeMetricError, test.expectedCountOfAddPolicyExecTimeMetricError)
+			f.t.Errorf("CountOfAddPolicyExecTime metric error = %s, want %s", expectedCountOfAddPolicyExecTimeMetricError, test.expectedCountOfAddPolicyExecTimeMetricError)
 		}
 	}
 }
