@@ -247,15 +247,9 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("Network Policy %s is not found, may be it is deleted", key)
-			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey
-			// #1 No item in RawNpMap, which means network policy with the cachedNetPolKey is not applied. Thus, do not need to clean up process.
-			// #2 item in RawNpMap exists, which means network policy with the cachedNetPolKey is applied . Thus, Need to clean up process.
+			// netPolObj is not found, but should need to check the RawNpMap cache with cachedNetPolKey.
+			// cleanUpNetworkPolicy method will take care of the deletion of a cached network policy if the cached network policy exists with cachedNetPolKey in our RawNpMap cache.
 			cachedNetPolKey := util.GetNSNameWithPrefix(key)
-			_, cachedNetPolObjExists := c.npMgr.RawNpMap[cachedNetPolKey]
-			if !cachedNetPolObjExists {
-				return nil
-			}
-
 			err = c.cleanUpNetworkPolicy(cachedNetPolKey, SafeToCleanUpAzureNpmChain)
 			if err != nil {
 				return fmt.Errorf("[syncNetPol] Error: %v when network policy is not found\n", err)
