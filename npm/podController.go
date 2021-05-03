@@ -602,12 +602,12 @@ func isCompletePod(podObj *corev1.Pod) bool {
 }
 
 // hasValidPodIP returns true when pod has a valid IPv4 form since currently NPM does not support IPv6.
-// (TODO): will need to update this function when NPM wants to support IPv4 with dual stack configuration in K8s
+// (TODO): will need to update this function when NPM wants to support IPV6 and dual stack configuration in K8s
 func hasValidPodIP(podObj *corev1.Pod) bool {
 
 	// First filter IPv6 address. It also filters IPv4-mapped IPv6 ("::ffff:192.0.2.1") form, but not sure this form can happen in k8s
 	if strings.Contains(podObj.Status.PodIP, ":") {
-		utilruntime.HandleError(fmt.Errorf("IPv6 %s may be assigned to Pod. NPM does not support IPv6 yet", podObj.Status.PodIP))
+		utilruntime.HandleError(fmt.Errorf("IPv6 %s may be assigned to Pod, but NPM does not support IPv6 yet", podObj.Status.PodIP))
 		return false
 	}
 
