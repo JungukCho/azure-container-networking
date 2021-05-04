@@ -428,12 +428,19 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 
 	// Create ipset related to namespace which this pod belong to if it does not exist.
-	// Make the shared NsMap structure read-only in podController
 	newPodObjNs := util.GetNSNameWithPrefix(newPodObj.Namespace)
 	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
 		if err = ipsMgr.CreateSet(newPodObjNs, []string{util.IpsetNetHashFlag}); err != nil {
 			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to create ipset for namespace %s with err: %v", newPodObjNs, err)
 		}
+
+		if err = ipsMgr.AddToList(util.KubeAllNamespacesFlag, newPodObjNs); err != nil {
+			return fmt.Errorf("[syncAddAndUpdatePod] Error: failed to add %s to all-namespace ipset list with err: %v", newPodObjNs, err)
+		}
+
+		// Add namespace object into NsMap cache only when two ipset operations are successful.
+		npmNs, _ := newNs(newPodObjNs)
+		c.npMgr.NsMap[newPodObjNs] = npmNs
 	}
 
 	podKey, _ := cache.MetaNamespaceKeyFunc(newPodObj)
