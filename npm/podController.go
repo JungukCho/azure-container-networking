@@ -427,7 +427,7 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	var err error
 	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
 
-	// Create ipset related to namespace which this pod belong to if they do not exist.
+	// Create ipset related to namespace which this pod belong to if it does not exist.
 	// Make the shared NsMap structure read-only in podController
 	newPodObjNs := util.GetNSNameWithPrefix(newPodObj.Namespace)
 	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
