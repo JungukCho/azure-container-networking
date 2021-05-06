@@ -16,7 +16,6 @@ import (
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 	"github.com/Azure/azure-container-networking/telemetry"
-	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/informers"
@@ -54,11 +53,9 @@ type NetworkPolicyManager struct {
 	npInformer       networkinginformers.NetworkPolicyInformer
 	netPolController *networkPolicyController
 
-	NodeName       string
-	NsMap          map[string]*Namespace                  // Key is ns-<nsname>
-	PodMap         map[string]*NpmPod                     // Key is <nsname>/<podname>
-	RawNpMap       map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
-	ProcessedNpMap map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<podSelectorHash>
+	NodeName string
+	NsMap    map[string]*Namespace // Key is ns-<nsname>
+	PodMap   map[string]*NpmPod    // Key is <nsname>/<podname>
 
 	clusterState telemetry.ClusterState
 	version      string
@@ -127,7 +124,10 @@ func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 		podCount.Value = 0
 		//Reducing one to remove all-namespaces ns obj
 		nsCount.Value = float64(len(npMgr.NsMap) - 1)
-		nwPolicyCount.Value += float64(len(npMgr.RawNpMap))
+
+		lenOfRawNpMap := npMgr.netPolController.LengthOfRawNpMap()
+		nwPolicyCount.Value += float64(lenOfRawNpMap)
+
 		podCount.Value += float64(len(npMgr.PodMap))
 		npMgr.Unlock()
 
@@ -242,8 +242,6 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 		NodeName:        os.Getenv("HOSTNAME"),
 		NsMap:           make(map[string]*Namespace),
 		PodMap:          make(map[string]*NpmPod),
-		RawNpMap:        make(map[string]*networkingv1.NetworkPolicy),
-		ProcessedNpMap:  make(map[string]*networkingv1.NetworkPolicy),
 		clusterState: telemetry.ClusterState{
 			PodCount:      0,
 			NsCount:       0,

@@ -57,8 +57,6 @@ func newNetPolFixture(t *testing.T) *netPolFixture {
 		isEnqueueEventIntoWorkQueue: true,
 	}
 
-	f.npMgr.RawNpMap = make(map[string]*networkingv1.NetworkPolicy)
-
 	// While running "make test-all", metrics hold states which was executed in previous unit test.
 	// (TODO): Need to fix to remove this fundamental dependency
 	metrics.ReInitializeAllMetrics()
@@ -226,7 +224,7 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 			f.t.Errorf("npMgr namespace map length = %d, want %d", got, test.expectedLenOfNsMap)
 		}
 
-		if got := len(f.netPolController.npMgr.RawNpMap); got != test.expectedLenOfRawNpMap {
+		if got := len(f.netPolController.RawNpMap); got != test.expectedLenOfRawNpMap {
 			f.t.Errorf("Raw NetPol Map length = %d, want %d", got, test.expectedLenOfRawNpMap)
 		}
 

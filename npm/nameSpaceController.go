@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
-	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 
@@ -37,7 +36,6 @@ type Namespace struct {
 	LabelsMap map[string]string // NameSpace labels
 	SetMap    map[string]string
 	IpsMgr    *ipsm.IpsetManager
-	iptMgr    *iptm.IptablesManager
 }
 
 // newNS constructs a new namespace object.
@@ -48,7 +46,6 @@ func newNs(name string) (*Namespace, error) {
 		LabelsMap: make(map[string]string),
 		SetMap:    make(map[string]string),
 		IpsMgr:    ipsm.NewIpsetManager(),
-		iptMgr:    iptm.NewIptablesManager(),
 	}
 
 	return ns, nil
