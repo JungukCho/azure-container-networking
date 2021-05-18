@@ -40,7 +40,6 @@ const (
 
 // NetworkPolicyManager contains informers for pod, namespace and networkpolicy.
 type NetworkPolicyManager struct {
-	sync.Mutex
 	clientset *kubernetes.Clientset
 
 	informerFactory informers.SharedInformerFactory
@@ -53,15 +52,93 @@ type NetworkPolicyManager struct {
 	npInformer       networkinginformers.NetworkPolicyInformer
 	netPolController *networkPolicyController
 
-	NodeName string
-	NsMap    map[string]*Namespace // Key is ns-<nsname>
-	PodMap   map[string]*NpmPod    // Key is <nsname>/<podname>
+	NsMap      map[string]*Namespace // Key is ns-<nsname>
+	NsMapMutex sync.RWMutex
 
-	clusterState telemetry.ClusterState
-	version      string
+	// Inside IpsMgr and iptMgr, may need lock as well
+	IpsMgr *ipsm.IpsetManager
+	iptMgr *iptm.IptablesManager
 
+	// Azure-specific variables
+	clusterState     telemetry.ClusterState
 	serverVersion    *version.Info
+	NodeName         string
+	version          string
 	TelemetryEnabled bool
+}
+
+// NewNetworkPolicyManager creates a NetworkPolicyManager
+func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory informers.SharedInformerFactory, npmVersion string) *NetworkPolicyManager {
+	var serverVersion *version.Info
+	var err error
+	for ticker, start := time.NewTicker(1*time.Second).C, time.Now(); time.Since(start) < time.Minute*1; {
+		<-ticker
+		serverVersion, err = clientset.ServerVersion()
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to retrieving kubernetes version")
+		panic(err.Error)
+	}
+	log.Logf("API server version: %+v", serverVersion)
+
+	if err = util.SetIsNewNwPolicyVerFlag(serverVersion); err != nil {
+		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to set IsNewNwPolicyVerFlag")
+		panic(err.Error)
+	}
+
+	npMgr := &NetworkPolicyManager{
+		clientset:       clientset,
+		informerFactory: informerFactory,
+		podInformer:     informerFactory.Core().V1().Pods(),
+		nsInformer:      informerFactory.Core().V1().Namespaces(),
+		npInformer:      informerFactory.Networking().V1().NetworkPolicies(),
+
+		NsMap:  make(map[string]*Namespace),
+		IpsMgr: ipsm.NewIpsetManager(),
+		iptMgr: iptm.NewIptablesManager(),
+
+		clusterState: telemetry.ClusterState{
+			PodCount:      0,
+			NsCount:       0,
+			NwPolicyCount: 0,
+		},
+		serverVersion:    serverVersion,
+		NodeName:         os.Getenv("HOSTNAME"),
+		version:          npmVersion,
+		TelemetryEnabled: true,
+	}
+
+	// Clear out leftover iptables states
+	log.Logf("Azure-NPM creating, cleaning iptables")
+	npMgr.iptMgr.UninitNpmChains()
+
+	// Clear out leftover ipsets states
+	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
+	npMgr.IpsMgr.DestroyNpmIpsets()
+
+	allNs := newNs(util.KubeAllNamespacesFlag)
+	npMgr.NsMap[util.KubeAllNamespacesFlag] = allNs
+
+	// Create ipset for the namespace.
+	kubeSystemNs := util.GetNSNameWithPrefix(util.KubeSystemFlag)
+	if err := npMgr.IpsMgr.CreateSet(kubeSystemNs, append([]string{util.IpsetNetHashFlag})); err != nil {
+		// (Question): Do we need to panic here?
+		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to create ipset for namespace %s.", kubeSystemNs)
+		// panic(err.Error)
+	}
+
+	// create pod controller
+	npMgr.podController = NewPodController(npMgr.podInformer, clientset, npMgr)
+	// create NameSpace controller
+	npMgr.nameSpaceController = NewNameSpaceController(npMgr.nsInformer, clientset, npMgr)
+	// create network policy controller
+	npMgr.netPolController = NewNetworkPolicyController(npMgr.npInformer, clientset, npMgr)
+
+	return npMgr
 }
 
 // GetClusterState returns current cluster state.
@@ -99,6 +176,7 @@ func GetAIMetadata() string {
 }
 
 // SendClusterMetrics :- send NPM cluster metrics using AppInsights
+// (QUESTION): Where is this function called?
 func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 	var (
 		heartbeat        = time.NewTicker(time.Minute * heartbeatIntervalInMinutes).C
@@ -120,16 +198,20 @@ func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 
 	for {
 		<-heartbeat
-		npMgr.Lock()
-		podCount.Value = 0
-		//Reducing one to remove all-namespaces ns obj
-		nsCount.Value = float64(len(npMgr.NsMap) - 1)
+
+		npMgr.NsMapMutex.RLock()
+		lenOfNsMap := len(npMgr.NsMap)
+		npMgr.NsMapMutex.RUnlock()
+		// Reducing one to remove all-namespaces ns obj
+		// (TODO): Is it safe?
+		nsCount.Value = float64(lenOfNsMap - 1)
 
 		lenOfRawNpMap := npMgr.netPolController.LengthOfRawNpMap()
 		nwPolicyCount.Value += float64(lenOfRawNpMap)
 
-		podCount.Value += float64(len(npMgr.PodMap))
-		npMgr.Unlock()
+		podCount.Value = 0
+		lenOfPodMap := npMgr.podController.LengthOfPodMap()
+		podCount.Value += float64(lenOfPodMap)
 
 		metrics.SendMetric(podCount)
 		metrics.SendMetric(nsCount)
@@ -195,82 +277,6 @@ func (npMgr *NetworkPolicyManager) Start(stopCh <-chan struct{}) error {
 	go npMgr.backup()
 
 	return nil
-}
-
-// NewNetworkPolicyManager creates a NetworkPolicyManager
-func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory informers.SharedInformerFactory, npmVersion string) *NetworkPolicyManager {
-	// Clear out left over iptables states
-	log.Logf("Azure-NPM creating, cleaning iptables")
-	iptMgr := iptm.NewIptablesManager()
-	iptMgr.UninitNpmChains()
-
-	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
-	ipsm.NewIpsetManager().DestroyNpmIpsets()
-
-	var (
-		podInformer   = informerFactory.Core().V1().Pods()
-		nsInformer    = informerFactory.Core().V1().Namespaces()
-		npInformer    = informerFactory.Networking().V1().NetworkPolicies()
-		serverVersion *version.Info
-		err           error
-	)
-
-	for ticker, start := time.NewTicker(1*time.Second).C, time.Now(); time.Since(start) < time.Minute*1; {
-		<-ticker
-		serverVersion, err = clientset.ServerVersion()
-		if err == nil {
-			break
-		}
-	}
-	if err != nil {
-		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to retrieving kubernetes version")
-		panic(err.Error)
-	}
-	log.Logf("API server version: %+v", serverVersion)
-
-	if err = util.SetIsNewNwPolicyVerFlag(serverVersion); err != nil {
-		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to set IsNewNwPolicyVerFlag")
-		panic(err.Error)
-	}
-
-	npMgr := &NetworkPolicyManager{
-		clientset:       clientset,
-		informerFactory: informerFactory,
-		podInformer:     podInformer,
-		nsInformer:      nsInformer,
-		npInformer:      npInformer,
-		NodeName:        os.Getenv("HOSTNAME"),
-		NsMap:           make(map[string]*Namespace),
-		PodMap:          make(map[string]*NpmPod),
-		clusterState: telemetry.ClusterState{
-			PodCount:      0,
-			NsCount:       0,
-			NwPolicyCount: 0,
-		},
-		version:          npmVersion,
-		serverVersion:    serverVersion,
-		TelemetryEnabled: true,
-	}
-
-	allNs, _ := newNs(util.KubeAllNamespacesFlag)
-	npMgr.NsMap[util.KubeAllNamespacesFlag] = allNs
-
-	// Create ipset for the namespace.
-	kubeSystemNs := util.GetNSNameWithPrefix(util.KubeSystemFlag)
-	if err := allNs.IpsMgr.CreateSet(kubeSystemNs, append([]string{util.IpsetNetHashFlag})); err != nil {
-		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to create ipset for namespace %s.", kubeSystemNs)
-	}
-
-	// create pod controller
-	npMgr.podController = NewPodController(podInformer, clientset, npMgr)
-
-	// create NameSpace controller
-	npMgr.nameSpaceController = NewNameSpaceController(nsInformer, clientset, npMgr)
-
-	// create network policy controller
-	npMgr.netPolController = NewNetworkPolicyController(npInformer, clientset, npMgr)
-
-	return npMgr
 }
 
 // reconcileChains checks for ordering of AZURE-NPM chain in FORWARD chain periodically.

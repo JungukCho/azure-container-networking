@@ -5,6 +5,7 @@ package npm
 import (
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
@@ -112,7 +113,9 @@ type podController struct {
 	workqueue       workqueue.RateLimitingInterface
 	//podCache        map[string]*corev1.Pod
 	// (TODO): podController does not need to have whole NetworkPolicyManager pointer. Need to improve it
-	npMgr *NetworkPolicyManager
+	npMgr       *NetworkPolicyManager
+	PodMap      map[string]*NpmPod // Key is <nsname>/<podname>
+	podMapMutex sync.RWMutex
 }
 
 func NewPodController(podInformer coreinformer.PodInformer, clientset kubernetes.Interface, npMgr *NetworkPolicyManager) *podController {
@@ -122,6 +125,7 @@ func NewPodController(podInformer coreinformer.PodInformer, clientset kubernetes
 		podListerSynced: podInformer.Informer().HasSynced,
 		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Pods"),
 		npMgr:           npMgr,
+		PodMap:          make(map[string]*NpmPod),
 	}
 
 	podInformer.Informer().AddEventHandler(
@@ -132,6 +136,12 @@ func NewPodController(podInformer coreinformer.PodInformer, clientset kubernetes
 		},
 	)
 	return podController
+}
+
+func (c *podController) LengthOfPodMap() int {
+	c.podMapMutex.RLock()
+	defer c.podMapMutex.RUnlock()
+	return len(c.PodMap)
 }
 
 // needSync filters the event if the event is not required to handle
@@ -203,9 +213,9 @@ func (c *podController) updatePod(old, new interface{}) {
 		}
 	}
 
-	c.npMgr.Lock()
-	defer c.npMgr.Unlock()
-	cachedNpmPodObj, npmPodExists := c.npMgr.PodMap[key]
+	c.podMapMutex.RLock()
+	defer c.podMapMutex.RUnlock()
+	cachedNpmPodObj, npmPodExists := c.PodMap[key]
 	if npmPodExists {
 		// if newPod does not have different states against lastly applied states stored in cachedNpmPodObj,
 		// podController does not need to reconcile this update.
@@ -253,12 +263,12 @@ func (c *podController) deletePod(obj interface{}) {
 	}
 
 	// (TODO): Reduce scope of lock later
-	c.npMgr.Lock()
-	defer c.npMgr.Unlock()
+	c.podMapMutex.RLock()
+	defer c.podMapMutex.RUnlock()
 
 	// If this pod object is not in the PodMap, we do not need to clean-up states for this pod
 	// since podController did not apply for any states for this pod
-	_, npmPodExists := c.npMgr.PodMap[key]
+	_, npmPodExists := c.PodMap[key]
 	if !npmPodExists {
 		return
 	}
@@ -341,9 +351,10 @@ func (c *podController) syncPod(key string) error {
 
 	// Get the Pod resource with this namespace/name
 	pod, err := c.podLister.Pods(namespace).Get(name)
+
 	// (TODO): Reduce scope of lock later
-	c.npMgr.Lock()
-	defer c.npMgr.Unlock()
+	c.npMgr.NsMapMutex.Lock()
+	defer c.npMgr.NsMapMutex.Lock()
 
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -381,7 +392,7 @@ func (c *podController) syncPod(key string) error {
 func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	podNs := util.GetNSNameWithPrefix(podObj.Namespace)
 	podKey, _ := cache.MetaNamespaceKeyFunc(podObj)
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	ipsMgr := c.npMgr.IpsMgr
 	klog.Infof("POD CREATING: [%s%s/%s/%s%+v%s]", string(podObj.GetUID()), podNs, podObj.Name, podObj.Spec.NodeName, podObj.Labels, podObj.Status.PodIP)
 
 	var err error
@@ -394,7 +405,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 	}
 
 	// add the Pod info to the podMap
-	c.npMgr.PodMap[podKey] = npmPodObj
+	c.PodMap[podKey] = npmPodObj
 
 	// Get lists of podLabelKey and podLabelKey + podLavelValue ,and then start adding them to ipsets.
 	for labelKey, labelVal := range podObj.Labels {
@@ -425,8 +436,7 @@ func (c *podController) syncAddedPod(podObj *corev1.Pod) error {
 // syncAddAndUpdatePod handles updating pod ip in its label's ipset.
 func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 	var err error
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
-
+	ipsMgr := c.npMgr.IpsMgr
 	// Create ipset related to namespace which this pod belong to if it does not exist.
 	newPodObjNs := util.GetNSNameWithPrefix(newPodObj.Namespace)
 	if _, exists := c.npMgr.NsMap[newPodObjNs]; !exists {
@@ -439,12 +449,13 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 		}
 
 		// Add namespace object into NsMap cache only when two ipset operations are successful.
-		npmNs, _ := newNs(newPodObjNs)
+		npmNs := newNs(newPodObjNs)
 		c.npMgr.NsMap[newPodObjNs] = npmNs
 	}
 
 	podKey, _ := cache.MetaNamespaceKeyFunc(newPodObj)
-	cachedNpmPodObj, exists := c.npMgr.PodMap[podKey]
+	cachedNpmPodObj, exists := c.PodMap[podKey]
+
 	klog.Infof("[syncAddAndUpdatePod] updating Pod with key %s", podKey)
 	// No cached npmPod exists. start adding the pod in a cache
 	if !exists {
@@ -544,13 +555,15 @@ func (c *podController) syncAddAndUpdatePod(newPodObj *corev1.Pod) error {
 func (c *podController) cleanUpDeletedPod(cachedNpmPodKey string) error {
 	klog.Infof("[cleanUpDeletedPod] deleting Pod with key %s", cachedNpmPodKey)
 	// If cached npmPod does not exist, return nil
-	cachedNpmPodObj, exist := c.npMgr.PodMap[cachedNpmPodKey]
+	cachedNpmPodObj, exist := c.PodMap[cachedNpmPodKey]
+
 	if !exist {
 		return nil
 	}
 
 	podNs := util.GetNSNameWithPrefix(cachedNpmPodObj.Namespace)
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	ipsMgr := c.npMgr.IpsMgr
+
 	var err error
 	// Delete the pod from its namespace's ipset.
 	if err = ipsMgr.DeleteFromSet(podNs, cachedNpmPodObj.PodIP, cachedNpmPodKey); err != nil {
@@ -577,7 +590,7 @@ func (c *podController) cleanUpDeletedPod(cachedNpmPodKey string) error {
 		return fmt.Errorf("[cleanUpDeletedPod] Error: failed to delete pod from named port ipset with err: %v", err)
 	}
 
-	delete(c.npMgr.PodMap, cachedNpmPodKey)
+	delete(c.PodMap, cachedNpmPodKey)
 	return nil
 }
 

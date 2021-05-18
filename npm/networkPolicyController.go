@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
-	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -41,7 +40,6 @@ type networkPolicyController struct {
 	npMgr         *NetworkPolicyManager
 	RawNpMap      map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
 	rawNpMapMutex sync.RWMutex
-	iptMgr        *iptm.IptablesManager
 	// flag to indicate default Azure NPM chain is created or not
 	isAzureNpmChainCreated bool
 
@@ -58,7 +56,6 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 		npMgr:              npMgr,
 		RawNpMap:           make(map[string]*networkingv1.NetworkPolicy),
 		//ProcessedNpMap:         make(map[string]*networkingv1.NetworkPolicy),
-		iptMgr:                 iptm.NewIptablesManager(),
 		isAzureNpmChainCreated: false,
 	}
 
@@ -257,9 +254,9 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 	// Get the network policy resource with this namespace/name
 	netPolObj, err := c.netPolLister.NetworkPolicies(namespace).Get(name)
 
-	// (TODO): Reduce scope of lock later
-	c.npMgr.Lock()
-	defer c.npMgr.Unlock()
+	// (TODO): is it ok to use Rlock here?
+	c.rawNpMapMutex.RLock()
+	defer c.rawNpMapMutex.RUnlock()
 
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -299,11 +296,13 @@ func (c *networkPolicyController) initializeDefaultAzureNpmChain() error {
 		return nil
 	}
 
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	// (TODO): manage it with lock
+	ipsMgr := c.npMgr.IpsMgr
+	iptMgr := c.npMgr.iptMgr
 	if err := ipsMgr.CreateSet(util.KubeSystemFlag, append([]string{util.IpsetNetHashFlag})); err != nil {
 		return fmt.Errorf("[initializeDefaultAzureNpmChain] Error: failed to initialize kube-system ipset with err %s", err)
 	}
-	if err := c.iptMgr.InitNpmChains(); err != nil {
+	if err := iptMgr.InitNpmChains(); err != nil {
 		return fmt.Errorf("[initializeDefaultAzureNpmChain] Error: failed to initialize azure-npm chains with err %s", err)
 	}
 
@@ -357,7 +356,10 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 
 	metrics.NumPolicies.Inc()
 
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	// (TODO): manage it with lock
+	ipsMgr := c.npMgr.IpsMgr
+	iptMgr := c.npMgr.iptMgr
+
 	sets, namedPorts, lists, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(netPolObj)
 	for _, set := range sets {
 		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
@@ -386,7 +388,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	}
 
 	for _, iptEntry := range iptEntries {
-		if err = c.iptMgr.Add(iptEntry); err != nil {
+		if err = iptMgr.Add(iptEntry); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
 		}
 	}
@@ -409,14 +411,16 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 	_, _, _, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(cachedNetPolObj)
 
 	var err error
+	iptMgr := c.npMgr.iptMgr
 	// delete iptables entries
 	for _, iptEntry := range iptEntries {
-		if err = c.iptMgr.Delete(iptEntry); err != nil {
+		if err = iptMgr.Delete(iptEntry); err != nil {
 			return fmt.Errorf("[cleanUpNetworkPolicy] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
 		}
 	}
 
-	ipsMgr := c.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	// (TODO): manage it with lock
+	ipsMgr := c.npMgr.IpsMgr
 	// delete ipset list related to ingress CIDRs
 	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs, ipsMgr); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule in due to %v", err)
@@ -438,7 +442,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 		// Even though UninitNpmChains function returns error, isAzureNpmChainCreated sets up false.
 		// So, when a new network policy is added, the "default Azure NPM chain" can be installed.
 		c.isAzureNpmChainCreated = false
-		if err = c.iptMgr.UninitNpmChains(); err != nil {
+		if err = iptMgr.UninitNpmChains(); err != nil {
 			utilruntime.HandleError(fmt.Errorf("Error: failed to uninitialize azure-npm chains with err: %s", err))
 			return nil
 		}

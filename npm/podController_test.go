@@ -174,7 +174,7 @@ type expectedValues struct {
 
 func checkPodTestResult(testName string, f *podFixture, testCases []expectedValues) {
 	for _, test := range testCases {
-		if got := len(f.npMgr.PodMap); got != test.expectedLenOfPodMap {
+		if got := len(f.podController.PodMap); got != test.expectedLenOfPodMap {
 			f.t.Errorf("%s failed @ PodMap length = %d, want %d", testName, got, test.expectedLenOfPodMap)
 		}
 		if got := len(f.npMgr.NsMap); got != test.expectedLenOfNsMap {
@@ -188,7 +188,7 @@ func checkPodTestResult(testName string, f *podFixture, testCases []expectedValu
 
 func checkNpmPodWithInput(testName string, f *podFixture, inputPodObj *corev1.Pod) {
 	podKey := getKey(inputPodObj, f.t)
-	cachedNpmPodObj := f.npMgr.PodMap[podKey]
+	cachedNpmPodObj := f.podController.PodMap[podKey]
 
 	if cachedNpmPodObj.PodIP != inputPodObj.Status.PodIP {
 		f.t.Errorf("%s failed @ PodIp check got = %s, want %s", testName, cachedNpmPodObj.PodIP, inputPodObj.Status.PodIP)
@@ -270,7 +270,7 @@ func TestAddHostNetworkPod(t *testing.T) {
 	}
 	checkPodTestResult("TestAddHostNetworkPod", f, testCases)
 
-	if _, exists := f.npMgr.PodMap[podKey]; exists {
+	if _, exists := f.podController.PodMap[podKey]; exists {
 		t.Error("TestAddHostNetworkPod failed @ cached pod obj exists check")
 	}
 }
@@ -294,7 +294,7 @@ func TestDeletePod(t *testing.T) {
 		{0, 2, 0},
 	}
 	checkPodTestResult("TestDeletePod", f, testCases)
-	if _, exists := f.npMgr.PodMap[podKey]; exists {
+	if _, exists := f.podController.PodMap[podKey]; exists {
 		t.Error("TestDeletePod failed @ cached pod obj exists check")
 	}
 }
@@ -318,7 +318,7 @@ func TestDeleteHostNetworkPod(t *testing.T) {
 		{0, 1, 0},
 	}
 	checkPodTestResult("TestDeleteHostNetworkPod", f, testCases)
-	if _, exists := f.npMgr.PodMap[podKey]; exists {
+	if _, exists := f.podController.PodMap[podKey]; exists {
 		t.Error("TestDeleteHostNetworkPod failed @ cached pod obj exists check")
 	}
 }
@@ -450,7 +450,7 @@ func TestPodStatusUpdatePod(t *testing.T) {
 		{0, 2, 0},
 	}
 	checkPodTestResult("TestPodStatusUpdatePod", f, testCases)
-	if _, exists := f.npMgr.PodMap[podKey]; exists {
+	if _, exists := f.podController.PodMap[podKey]; exists {
 		t.Error("TestPodStatusUpdatePod failed @ cached pod obj exists check")
 	}
 }

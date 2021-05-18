@@ -31,12 +31,11 @@ func getKey(obj interface{}, t *testing.T) string {
 func newNPMgr(t *testing.T) *NetworkPolicyManager {
 	npMgr := &NetworkPolicyManager{
 		NsMap:            make(map[string]*Namespace),
-		PodMap:           make(map[string]*NpmPod),
 		TelemetryEnabled: false,
 	}
 
 	// This initialization important as without this NPM will panic
-	allNs, _ := newNs(util.KubeAllNamespacesFlag)
+	allNs := newNs(util.KubeAllNamespacesFlag)
 	npMgr.NsMap[util.KubeAllNamespacesFlag] = allNs
 	return npMgr
 }

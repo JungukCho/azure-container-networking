@@ -150,12 +150,6 @@ func deleteNamespace(t *testing.T, f *nameSpaceFixture, nsObj *corev1.Namespace,
 	f.nsController.processNextWorkItem()
 }
 
-func TestNewNs(t *testing.T) {
-	if _, err := newNs("test"); err != nil {
-		t.Errorf("TestnewNs failed @ newNs")
-	}
-}
-
 func TestAddNamespace(t *testing.T) {
 	f := newNsFixture(t)
 	f.ipSetSave(util.IpsetTestConfigFile)
@@ -506,7 +500,7 @@ func TestDeleteNamespaceWithTombstoneAfterAddingNameSpace(t *testing.T) {
 }
 
 func TestGetNamespaceObjFromNsObj(t *testing.T) {
-	ns, _ := newNs("test-ns")
+	ns := newNs("test-ns")
 	ns.LabelsMap = map[string]string{
 		"test": "new",
 	}
@@ -528,9 +522,6 @@ func TestIsSystemNs(t *testing.T) {
 
 func checkNsTestResult(testName string, f *nameSpaceFixture, testCases []expectedNsValues) {
 	for _, test := range testCases {
-		if got := len(f.npMgr.PodMap); got != test.expectedLenOfPodMap {
-			f.t.Errorf("PodMap length = %d, want %d. Map: %+v", got, test.expectedLenOfPodMap, f.npMgr.PodMap)
-		}
 		if got := len(f.npMgr.NsMap); got != test.expectedLenOfNsMap {
 			f.t.Errorf("NsMap length = %d, want %d. Map: %+v", got, test.expectedLenOfNsMap, f.npMgr.NsMap)
 		}

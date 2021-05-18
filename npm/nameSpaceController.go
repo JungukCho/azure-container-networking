@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/Azure/azure-container-networking/npm/ipsm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 
@@ -34,21 +33,15 @@ const (
 type Namespace struct {
 	name      string
 	LabelsMap map[string]string // NameSpace labels
-	SetMap    map[string]string
-	IpsMgr    *ipsm.IpsetManager
 }
 
 // newNS constructs a new namespace object.
-// (TODO): need to change newNS function. It always returns "nil"
-func newNs(name string) (*Namespace, error) {
+func newNs(name string) *Namespace {
 	ns := &Namespace{
 		name:      name,
 		LabelsMap: make(map[string]string),
-		SetMap:    make(map[string]string),
-		IpsMgr:    ipsm.NewIpsetManager(),
 	}
-
-	return ns, nil
+	return ns
 }
 
 func (nsObj *Namespace) getNamespaceObjFromNsObj() *corev1.Namespace {
@@ -156,8 +149,8 @@ func (nsc *nameSpaceController) updateNamespace(old, new interface{}) {
 
 	nsKey := util.GetNSNameWithPrefix(key)
 
-	nsc.npMgr.Lock()
-	defer nsc.npMgr.Unlock()
+	nsc.npMgr.NsMapMutex.Lock()
+	defer nsc.npMgr.NsMapMutex.Unlock()
 	cachedNsObj, nsExists := nsc.npMgr.NsMap[nsKey]
 	if nsExists {
 		if reflect.DeepEqual(cachedNsObj.LabelsMap, nsObj.ObjectMeta.Labels) {
@@ -196,8 +189,8 @@ func (nsc *nameSpaceController) deleteNamespace(obj interface{}) {
 		return
 	}
 
-	nsc.npMgr.Lock()
-	defer nsc.npMgr.Unlock()
+	nsc.npMgr.NsMapMutex.RLock()
+	defer nsc.npMgr.NsMapMutex.RUnlock()
 
 	nsKey := util.GetNSNameWithPrefix(key)
 	_, nsExists := nsc.npMgr.NsMap[nsKey]
@@ -279,10 +272,12 @@ func (nsc *nameSpaceController) processNextWorkItem() bool {
 func (nsc *nameSpaceController) syncNameSpace(key string) error {
 	// Get the NameSpace resource with this key
 	nsObj, err := nsc.nameSpaceLister.Get(key)
+
 	// lock to complete events
 	// TODO: Reduce scope of lock later
-	nsc.npMgr.Lock()
-	defer nsc.npMgr.Unlock()
+	nsc.npMgr.NsMapMutex.Lock()
+	defer nsc.npMgr.NsMapMutex.Unlock()
+
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("NameSpace %s not found, may be it is deleted", key)
@@ -322,7 +317,7 @@ func (nsc *nameSpaceController) syncAddNameSpace(nsObj *corev1.Namespace) error 
 	corev1NsName, corev1NsLabels := util.GetNSNameWithPrefix(nsObj.ObjectMeta.Name), nsObj.ObjectMeta.Labels
 	klog.Infof("NAMESPACE CREATING: [%s/%v]", corev1NsName, corev1NsLabels)
 
-	ipsMgr := nsc.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	ipsMgr := nsc.npMgr.IpsMgr
 	// Create ipset for the namespace.
 	if err = ipsMgr.CreateSet(corev1NsName, []string{util.IpsetNetHashFlag}); err != nil {
 		metrics.SendErrorLogAndMetric(util.NSID, "[AddNamespace] Error: failed to create ipset for namespace %s with err: %v", corev1NsName, err)
@@ -334,7 +329,7 @@ func (nsc *nameSpaceController) syncAddNameSpace(nsObj *corev1.Namespace) error 
 		return err
 	}
 
-	npmNs, _ := newNs(corev1NsName)
+	npmNs := newNs(corev1NsName)
 	nsc.npMgr.NsMap[corev1NsName] = npmNs
 
 	// Add the namespace to its label's ipset list.
@@ -385,7 +380,7 @@ func (nsc *nameSpaceController) syncUpdateNameSpace(newNsObj *corev1.Namespace) 
 	//If the Namespace is not deleted, delete removed labels and create new labels
 	addToIPSets, deleteFromIPSets := util.GetIPSetListCompareLabels(curNsObj.LabelsMap, newNsLabel)
 	// Delete the namespace from its label's ipset list.
-	ipsMgr := nsc.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	ipsMgr := nsc.npMgr.IpsMgr
 	for _, nsLabelVal := range deleteFromIPSets {
 		labelKey := util.GetNSNameWithPrefix(nsLabelVal)
 		klog.Infof("Deleting namespace %s from ipset list %s", newNsName, labelKey)
@@ -439,7 +434,7 @@ func (nsc *nameSpaceController) cleanDeletedNamespace(cachedNsKey string) error 
 	klog.Infof("NAMESPACE DELETING cached labels: [%s/%v]", cachedNsKey, cachedNsObj.LabelsMap)
 
 	var err error
-	ipsMgr := nsc.npMgr.NsMap[util.KubeAllNamespacesFlag].IpsMgr
+	ipsMgr := nsc.npMgr.IpsMgr
 	// Delete the namespace from its label's ipset list.
 	for nsLabelKey, nsLabelVal := range cachedNsObj.LabelsMap {
 		labelIpsetName := util.GetNSNameWithPrefix(nsLabelKey)
