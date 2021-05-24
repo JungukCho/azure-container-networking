@@ -37,7 +37,6 @@ type networkPolicyController struct {
 	netPolListerSynced cache.InformerSynced
 	workqueue          workqueue.RateLimitingInterface
 	RawNpMap           map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
-	// rawNpMapMutex sync.RWMutex
 	// (TODO): will leverage this strucute to manage network policy more efficiently
 	//ProcessedNpMap map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<podSelectorHash>
 	// flag to indicate default Azure NPM chain is created or not
@@ -61,7 +60,6 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 
 	// (TODO):  willl need to return results of these calls - need to panic
 	// Clear out leftover iptables states
-
 	npInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    netPolController.addNetworkPolicy,
@@ -72,12 +70,11 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 	return netPolController
 }
 
-func (c *networkPolicyController) initializeIptables() error {
+func (c *networkPolicyController) initializeIpTables() error {
 	klog.Infof("Azure-NPM creating, cleaning iptables")
 
 	// (TODO):  return error
 	err := c.iptMgr.UninitNpmChains()
-
 	if err != nil {
 		return err
 	}
@@ -85,15 +82,10 @@ func (c *networkPolicyController) initializeIptables() error {
 	// (TODO): Check any side effects
 	go c.reconcileChains()
 	go c.backup()
-
 	return nil
 }
 
-// c.podMapMutex.RLock()
-// defer c.podMapMutex.RUnlock()
-func (c *networkPolicyController) LengthOfRawNpMap() int {
-	// c.rawNpMapMutex.RLock()
-	// defer c.rawNpMapMutex.RUnlock()
+func (c *networkPolicyController) lengthOfRawNpMap() int {
 	return len(c.RawNpMap)
 }
 
@@ -143,20 +135,6 @@ func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 	}
 
 	c.workqueue.Add(netPolkey)
-	// c.rawNpMapMutex.RLock()
-	// defer c.rawNpMapMutex.RUnlock()
-	// // Potential issue -> Other goroutines can update cachedNetPolObj?
-	// cachedNetPolObj, netPolExists := c.RawNpMap[netPolkey]
-	// if netPolExists {
-	// 	// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
-	// 	// netPolController does not need to reconcile this update.
-	// 	// in this updateNetworkPolicy event, newNetPol was updated with states which netPolController does not need to reconcile.
-	// 	if isSameNetworkPolicy(cachedNetPolObj, newNetPol) {
-	// 		return
-	// 	}
-	// }
-
-	// c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
@@ -188,14 +166,6 @@ func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 	}
 
 	c.workqueue.Add(netPolkey)
-
-	// _, netPolExists := c.RawNpMap[netPolkey]
-	// // If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
-	// // since netPolController did not apply for any states for the network policy
-	// if !netPolExists {
-	// 	return
-	// }
-	// c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) Run(threadiness int, stopCh <-chan struct{}) error {
