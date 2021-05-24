@@ -17,6 +17,13 @@ import (
 	"github.com/Azure/azure-container-networking/npm/util"
 )
 
+/*
+TODO:
+1. Clarify error codes after running ipset commands and need to use it in a very accurate way
+2. Try to decouple ListMap and SetMap if possible. At least use different locks for ListMap and SetMa
+3. Clean up codes (i.e., just use different functions for "Nethash" and "List" type of IPSet to maintain code better).
+This will also helps to reduce the scope of locks
+*/
 type ipsEntry struct {
 	operationFlag string
 	name          string
@@ -28,8 +35,6 @@ type ipsEntry struct {
 type IpsetManager struct {
 	ListMap map[string]*ipset //tracks all set lists.
 	SetMap  map[string]*ipset //label -> []ip
-	// (TODO): Further optimization:
-	// Will have two locks for ListMap and SetMap
 	sync.Mutex
 }
 
