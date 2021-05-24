@@ -80,7 +80,8 @@ spec:
 
       containers:
         - name: azure-npm
-          image: mcr.microsoft.com/containernetworking/azure-npm:v1.3.1
+          image: acnpublic.azurecr.io/azure-npm:v1.3.2-5-g6a82b28-conformance-test
+          imagePullPolicy: Always
           resources:
             limits:
               cpu: 250m

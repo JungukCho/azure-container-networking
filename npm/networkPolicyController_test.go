@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
-	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/metrics/promutil"
 
@@ -34,11 +33,7 @@ type netPolFixture struct {
 	// Objects from here preloaded into NewSimpleFake.
 	kubeobjects []runtime.Object
 
-	// (TODO) will remove npMgr if possible
-	npMgr  *NetworkPolicyManager
-	ipsMgr *ipsm.IpsetManager
-	iptMgr *iptm.IptablesManager
-
+	ipsMgr           *ipsm.IpsetManager
 	netPolController *networkPolicyController
 	kubeInformer     kubeinformers.SharedInformerFactory
 
@@ -51,9 +46,7 @@ func newNetPolFixture(t *testing.T) *netPolFixture {
 		t:                           t,
 		netPolLister:                []*networkingv1.NetworkPolicy{},
 		kubeobjects:                 []runtime.Object{},
-		npMgr:                       newNPMgr(t),
 		ipsMgr:                      ipsm.NewIpsetManager(),
-		iptMgr:                      iptm.NewIptablesManager(),
 		isEnqueueEventIntoWorkQueue: true,
 	}
 
@@ -68,7 +61,7 @@ func (f *netPolFixture) newNetPolController(stopCh chan struct{}) {
 	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
 	f.kubeInformer = kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	f.netPolController = NewNetworkPolicyController(f.kubeInformer.Networking().V1().NetworkPolicies(), f.kubeclient, f.npMgr)
+	f.netPolController = NewNetworkPolicyController(f.kubeInformer.Networking().V1().NetworkPolicies(), f.kubeclient, f.ipsMgr)
 	f.netPolController.netPolListerSynced = alwaysReady
 
 	for _, netPol := range f.netPolLister {
@@ -79,13 +72,13 @@ func (f *netPolFixture) newNetPolController(stopCh chan struct{}) {
 }
 
 func (f *netPolFixture) saveIpTables(iptablesConfigFile string) {
-	if err := f.iptMgr.Save(iptablesConfigFile); err != nil {
+	if err := f.netPolController.iptMgr.Save(iptablesConfigFile); err != nil {
 		f.t.Errorf("Failed to save iptables rules")
 	}
 }
 
 func (f *netPolFixture) restoreIpTables(iptablesConfigFile string) {
-	if err := f.iptMgr.Restore(iptablesConfigFile); err != nil {
+	if err := f.netPolController.iptMgr.Restore(iptablesConfigFile); err != nil {
 		f.t.Errorf("Failed to restore iptables rules")
 	}
 }
@@ -206,6 +199,7 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 }
 
 type expectedNetPolValues struct {
+	// (TODO): do not check ns map
 	expectedLenOfNsMap                int
 	expectedLenOfRawNpMap             int
 	expectedLenOfWorkQueue            int
@@ -220,9 +214,9 @@ type expectedNetPolValues struct {
 
 func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expectedNetPolValues) {
 	for _, test := range testCases {
-		if got := len(f.npMgr.NsMap); got != test.expectedLenOfNsMap {
-			f.t.Errorf("npMgr namespace map length = %d, want %d", got, test.expectedLenOfNsMap)
-		}
+		// if got := len(f.npMgr.Network); got != test.expectedLenOfNsMap {
+		// 	f.t.Errorf("npMgr namespace map length = %d, want %d", got, test.expectedLenOfNsMap)
+		// }
 
 		if got := len(f.netPolController.RawNpMap); got != test.expectedLenOfRawNpMap {
 			f.t.Errorf("Raw NetPol Map length = %d, want %d", got, test.expectedLenOfRawNpMap)

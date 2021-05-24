@@ -6,13 +6,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/Azure/azure-container-networking/aitelemetry"
 	"github.com/Azure/azure-container-networking/log"
 	"github.com/Azure/azure-container-networking/npm/ipsm"
-	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 	"github.com/Azure/azure-container-networking/telemetry"
@@ -52,12 +50,8 @@ type NetworkPolicyManager struct {
 	npInformer       networkinginformers.NetworkPolicyInformer
 	netPolController *networkPolicyController
 
-	NsMap      map[string]*Namespace // Key is ns-<nsname>
-	NsMapMutex sync.RWMutex
-
-	// Inside IpsMgr and iptMgr, may need lock as well
-	IpsMgr *ipsm.IpsetManager
-	iptMgr *iptm.IptablesManager
+	// ipsMgr are shared in all controllers, so we need to manage lock in IpsetManager.
+	ipsMgr *ipsm.IpsetManager
 
 	// Azure-specific variables
 	clusterState     telemetry.ClusterState
@@ -96,11 +90,7 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 		podInformer:     informerFactory.Core().V1().Pods(),
 		nsInformer:      informerFactory.Core().V1().Namespaces(),
 		npInformer:      informerFactory.Networking().V1().NetworkPolicies(),
-
-		NsMap:  make(map[string]*Namespace),
-		IpsMgr: ipsm.NewIpsetManager(),
-		iptMgr: iptm.NewIptablesManager(),
-
+		ipsMgr:          ipsm.NewIpsetManager(),
 		clusterState: telemetry.ClusterState{
 			PodCount:      0,
 			NsCount:       0,
@@ -112,31 +102,32 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 		TelemetryEnabled: true,
 	}
 
-	// Clear out leftover iptables states
-	log.Logf("Azure-NPM creating, cleaning iptables")
-	npMgr.iptMgr.UninitNpmChains()
-
-	// Clear out leftover ipsets states
-	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
-	npMgr.IpsMgr.DestroyNpmIpsets()
-
-	allNs := newNs(util.KubeAllNamespacesFlag)
-	npMgr.NsMap[util.KubeAllNamespacesFlag] = allNs
-
-	// Create ipset for the namespace.
-	kubeSystemNs := util.GetNSNameWithPrefix(util.KubeSystemFlag)
-	if err := npMgr.IpsMgr.CreateSet(kubeSystemNs, append([]string{util.IpsetNetHashFlag})); err != nil {
-		// (Question): Do we need to panic here?
-		metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to create ipset for namespace %s.", kubeSystemNs)
-		// panic(err.Error)
-	}
-
 	// create pod controller
-	npMgr.podController = NewPodController(npMgr.podInformer, clientset, npMgr)
+	npMgr.podController = NewPodController(npMgr.podInformer, clientset, npMgr.ipsMgr)
 	// create NameSpace controller
-	npMgr.nameSpaceController = NewNameSpaceController(npMgr.nsInformer, clientset, npMgr)
+	npMgr.nameSpaceController = NewNameSpaceController(npMgr.nsInformer, clientset, npMgr.ipsMgr)
 	// create network policy controller
-	npMgr.netPolController = NewNetworkPolicyController(npMgr.npInformer, clientset, npMgr)
+	npMgr.netPolController = NewNetworkPolicyController(npMgr.npInformer, clientset, npMgr.ipsMgr)
+
+	// It is important to keep the order between iptables and ipset
+	// 1. first initialize iptables
+	npMgr.netPolController.initializeIptables()
+
+	// err = npMgr.netPolController.initializeIptables()
+	// if err != nil {
+	// 	klog.Info(err.Error())
+	// 	panic(err.Error())
+	// }
+
+	// 2. then clear out leftover ipsets states
+	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
+	npMgr.ipsMgr.DestroyNpmIpsets()
+
+	// err = npMgr.ipsMgr.DestroyNpmIpsets()
+	// if err != nil {
+	// 	klog.Info(err.Error())
+	// 	panic(err.Error())
+	// }
 
 	return npMgr
 }
@@ -199,12 +190,9 @@ func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 	for {
 		<-heartbeat
 
-		npMgr.NsMapMutex.RLock()
-		lenOfNsMap := len(npMgr.NsMap)
-		npMgr.NsMapMutex.RUnlock()
-		// Reducing one to remove all-namespaces ns obj
-		// (TODO): Is it safe?
-		nsCount.Value = float64(lenOfNsMap - 1)
+		// (TODO): If it needs very accurate metrics, need lock for each one
+		lenOfNsMap := npMgr.nameSpaceController.LengthOfNsMap()
+		nsCount.Value = float64(lenOfNsMap)
 
 		lenOfRawNpMap := npMgr.netPolController.LengthOfRawNpMap()
 		nwPolicyCount.Value += float64(lenOfRawNpMap)
@@ -216,35 +204,6 @@ func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 		metrics.SendMetric(podCount)
 		metrics.SendMetric(nsCount)
 		metrics.SendMetric(nwPolicyCount)
-	}
-}
-
-// restore restores iptables from backup file
-func (npMgr *NetworkPolicyManager) restore() {
-	iptMgr := iptm.NewIptablesManager()
-	var err error
-	for i := 0; i < restoreMaxRetries; i++ {
-		if err = iptMgr.Restore(util.IptablesConfigFile); err == nil {
-			return
-		}
-
-		time.Sleep(restoreRetryWaitTimeInSeconds * time.Second)
-	}
-
-	metrics.SendErrorLogAndMetric(util.NpmID, "Error: timeout restoring Azure-NPM states")
-	panic(err.Error)
-}
-
-// backup takes snapshots of iptables filter table and saves it periodically.
-func (npMgr *NetworkPolicyManager) backup() {
-	iptMgr := iptm.NewIptablesManager()
-	var err error
-	for {
-		time.Sleep(backupWaitTimeInSeconds * time.Second)
-
-		if err = iptMgr.Save(util.IptablesConfigFile); err != nil {
-			metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to back up Azure-NPM states")
-		}
 	}
 }
 
@@ -273,20 +232,5 @@ func (npMgr *NetworkPolicyManager) Start(stopCh <-chan struct{}) error {
 	go npMgr.podController.Run(threadness, stopCh)
 	go npMgr.nameSpaceController.Run(threadness, stopCh)
 	go npMgr.netPolController.Run(threadness, stopCh)
-	go npMgr.reconcileChains()
-	go npMgr.backup()
-
-	return nil
-}
-
-// reconcileChains checks for ordering of AZURE-NPM chain in FORWARD chain periodically.
-func (npMgr *NetworkPolicyManager) reconcileChains() error {
-	iptMgr := iptm.NewIptablesManager()
-	select {
-	case <-time.After(reconcileChainTimeInMinutes * time.Minute):
-		if err := iptMgr.CheckAndAddForwardChain(); err != nil {
-			return err
-		}
-	}
 	return nil
 }

@@ -35,8 +35,6 @@ type podFixture struct {
 	// Objects from here preloaded into NewSimpleFake.
 	kubeobjects []runtime.Object
 
-	// (TODO) will remove npMgr if possible
-	npMgr         *NetworkPolicyManager
 	ipsMgr        *ipsm.IpsetManager
 	podController *podController
 	kubeInformer  kubeinformers.SharedInformerFactory
@@ -47,7 +45,6 @@ func newFixture(t *testing.T) *podFixture {
 		t:           t,
 		podLister:   []*corev1.Pod{},
 		kubeobjects: []runtime.Object{},
-		npMgr:       newNPMgr(t),
 		ipsMgr:      ipsm.NewIpsetManager(),
 	}
 	return f
@@ -57,7 +54,7 @@ func (f *podFixture) newPodController(stopCh chan struct{}) {
 	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
 	f.kubeInformer = kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	f.podController = NewPodController(f.kubeInformer.Core().V1().Pods(), f.kubeclient, f.npMgr)
+	f.podController = NewPodController(f.kubeInformer.Core().V1().Pods(), f.kubeclient, f.ipsMgr)
 	f.podController.podListerSynced = alwaysReady
 
 	for _, pod := range f.podLister {
@@ -174,10 +171,10 @@ type expectedValues struct {
 
 func checkPodTestResult(testName string, f *podFixture, testCases []expectedValues) {
 	for _, test := range testCases {
-		if got := len(f.podController.PodMap); got != test.expectedLenOfPodMap {
+		if got := len(f.podController.podMap); got != test.expectedLenOfPodMap {
 			f.t.Errorf("%s failed @ PodMap length = %d, want %d", testName, got, test.expectedLenOfPodMap)
 		}
-		if got := len(f.npMgr.NsMap); got != test.expectedLenOfNsMap {
+		if got := len(f.podController.nsSet); got != test.expectedLenOfNsMap {
 			f.t.Errorf("%s failed @ NsMap length = %d, want %d", testName, got, test.expectedLenOfNsMap)
 		}
 		if got := f.podController.workqueue.Len(); got != test.expectedLenOfWorkQueue {
@@ -188,7 +185,7 @@ func checkPodTestResult(testName string, f *podFixture, testCases []expectedValu
 
 func checkNpmPodWithInput(testName string, f *podFixture, inputPodObj *corev1.Pod) {
 	podKey := getKey(inputPodObj, f.t)
-	cachedNpmPodObj := f.podController.PodMap[podKey]
+	cachedNpmPodObj := f.podController.podMap[podKey]
 
 	if cachedNpmPodObj.PodIP != inputPodObj.Status.PodIP {
 		f.t.Errorf("%s failed @ PodIp check got = %s, want %s", testName, cachedNpmPodObj.PodIP, inputPodObj.Status.PodIP)
@@ -270,7 +267,7 @@ func TestAddHostNetworkPod(t *testing.T) {
 	}
 	checkPodTestResult("TestAddHostNetworkPod", f, testCases)
 
-	if _, exists := f.podController.PodMap[podKey]; exists {
+	if _, exists := f.podController.podMap[podKey]; exists {
 		t.Error("TestAddHostNetworkPod failed @ cached pod obj exists check")
 	}
 }
@@ -294,7 +291,7 @@ func TestDeletePod(t *testing.T) {
 		{0, 2, 0},
 	}
 	checkPodTestResult("TestDeletePod", f, testCases)
-	if _, exists := f.podController.PodMap[podKey]; exists {
+	if _, exists := f.podController.podMap[podKey]; exists {
 		t.Error("TestDeletePod failed @ cached pod obj exists check")
 	}
 }
@@ -318,7 +315,7 @@ func TestDeleteHostNetworkPod(t *testing.T) {
 		{0, 1, 0},
 	}
 	checkPodTestResult("TestDeleteHostNetworkPod", f, testCases)
-	if _, exists := f.podController.PodMap[podKey]; exists {
+	if _, exists := f.podController.podMap[podKey]; exists {
 		t.Error("TestDeleteHostNetworkPod failed @ cached pod obj exists check")
 	}
 }
@@ -450,7 +447,7 @@ func TestPodStatusUpdatePod(t *testing.T) {
 		{0, 2, 0},
 	}
 	checkPodTestResult("TestPodStatusUpdatePod", f, testCases)
-	if _, exists := f.podController.PodMap[podKey]; exists {
+	if _, exists := f.podController.podMap[podKey]; exists {
 		t.Error("TestPodStatusUpdatePod failed @ cached pod obj exists check")
 	}
 }
@@ -465,4 +462,30 @@ func TestHasValidPodIP(t *testing.T) {
 	if ok := hasValidPodIP(podObj); !ok {
 		t.Errorf("TestisValidPod failed @ isValidPod")
 	}
+}
+
+func TestWorkQueue(t *testing.T) {
+	labels := map[string]string{
+		"app": "test-pod",
+	}
+	podObj := createPod("test-pod", "test-namespace", "0", "1.2.3.4", labels, NonHostNetwork, corev1.PodRunning)
+
+	f := newFixture(t)
+	f.podLister = append(f.podLister, podObj)
+	f.kubeobjects = append(f.kubeobjects, podObj)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	f.newPodController(stopCh)
+
+	podKey := getKey(podObj, t)
+	// (TODO): will confirm WQ internals.
+	// It does not add multiple elements with the same key.
+	f.podController.workqueue.Add(podKey)
+	t.Logf("WQ len %d ", f.podController.workqueue.Len())
+
+	f.podController.workqueue.Add(podKey)
+	t.Logf("WQ len %d ", f.podController.workqueue.Len())
+
+	f.podController.workqueue.Add(podKey + "1")
+	t.Logf("WQ len %d ", f.podController.workqueue.Len())
 }

@@ -5,10 +5,10 @@ package npm
 import (
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
+	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
 	"github.com/Azure/azure-container-networking/npm/util"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -36,28 +36,31 @@ type networkPolicyController struct {
 	netPolLister       netpollister.NetworkPolicyLister
 	netPolListerSynced cache.InformerSynced
 	workqueue          workqueue.RateLimitingInterface
-	// (TODO): networkPolController does not need to have whole NetworkPolicyManager pointer. Need to improve it
-	npMgr         *NetworkPolicyManager
-	RawNpMap      map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
-	rawNpMapMutex sync.RWMutex
-	// flag to indicate default Azure NPM chain is created or not
-	isAzureNpmChainCreated bool
-
+	RawNpMap           map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<policyname>
+	// rawNpMapMutex sync.RWMutex
 	// (TODO): will leverage this strucute to manage network policy more efficiently
 	//ProcessedNpMap map[string]*networkingv1.NetworkPolicy // Key is <nsname>/<podSelectorHash>
+	// flag to indicate default Azure NPM chain is created or not
+	isAzureNpmChainCreated bool
+	ipsMgr                 *ipsm.IpsetManager
+	iptMgr                 *iptm.IptablesManager
 }
 
-func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInformer, clientset kubernetes.Interface, npMgr *NetworkPolicyManager) *networkPolicyController {
+func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInformer, clientset kubernetes.Interface, ipsMgr *ipsm.IpsetManager) *networkPolicyController {
 	netPolController := &networkPolicyController{
 		clientset:          clientset,
 		netPolLister:       npInformer.Lister(),
 		netPolListerSynced: npInformer.Informer().HasSynced,
 		workqueue:          workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "NetworkPolicy"),
-		npMgr:              npMgr,
 		RawNpMap:           make(map[string]*networkingv1.NetworkPolicy),
 		//ProcessedNpMap:         make(map[string]*networkingv1.NetworkPolicy),
 		isAzureNpmChainCreated: false,
+		ipsMgr:                 ipsMgr,
+		iptMgr:                 iptm.NewIptablesManager(),
 	}
+
+	// (TODO):  willl need to return results of these calls - need to panic
+	// Clear out leftover iptables states
 
 	npInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
@@ -69,9 +72,28 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 	return netPolController
 }
 
+func (c *networkPolicyController) initializeIptables() error {
+	klog.Infof("Azure-NPM creating, cleaning iptables")
+
+	// (TODO):  return error
+	err := c.iptMgr.UninitNpmChains()
+
+	if err != nil {
+		return err
+	}
+
+	// (TODO): Check any side effects
+	go c.reconcileChains()
+	go c.backup()
+
+	return nil
+}
+
+// c.podMapMutex.RLock()
+// defer c.podMapMutex.RUnlock()
 func (c *networkPolicyController) LengthOfRawNpMap() int {
-	c.rawNpMapMutex.RLock()
-	defer c.rawNpMapMutex.RUnlock()
+	// c.rawNpMapMutex.RLock()
+	// defer c.rawNpMapMutex.RUnlock()
 	return len(c.RawNpMap)
 }
 
@@ -120,21 +142,21 @@ func (c *networkPolicyController) updateNetworkPolicy(old, new interface{}) {
 		}
 	}
 
-	c.rawNpMapMutex.RLock()
-	defer c.rawNpMapMutex.RUnlock()
-	// Potential issue -> Other goroutines can update cachedNetPolObj?
-	cachedNetPolObj, netPolExists := c.RawNpMap[netPolkey]
-
-	if netPolExists {
-		// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
-		// netPolController does not need to reconcile this update.
-		// in this updateNetworkPolicy event, newNetPol was updated with states which netPolController does not need to reconcile.
-		if isSameNetworkPolicy(cachedNetPolObj, newNetPol) {
-			return
-		}
-	}
-
 	c.workqueue.Add(netPolkey)
+	// c.rawNpMapMutex.RLock()
+	// defer c.rawNpMapMutex.RUnlock()
+	// // Potential issue -> Other goroutines can update cachedNetPolObj?
+	// cachedNetPolObj, netPolExists := c.RawNpMap[netPolkey]
+	// if netPolExists {
+	// 	// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
+	// 	// netPolController does not need to reconcile this update.
+	// 	// in this updateNetworkPolicy event, newNetPol was updated with states which netPolController does not need to reconcile.
+	// 	if isSameNetworkPolicy(cachedNetPolObj, newNetPol) {
+	// 		return
+	// 	}
+	// }
+
+	// c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
@@ -165,17 +187,15 @@ func (c *networkPolicyController) deleteNetworkPolicy(obj interface{}) {
 		return
 	}
 
-	// (TODO): check RLock
-	c.rawNpMapMutex.RLock()
-	defer c.rawNpMapMutex.RUnlock()
-	_, netPolExists := c.RawNpMap[netPolkey]
-	// If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
-	// since netPolController did not apply for any states for the network policy
-	if !netPolExists {
-		return
-	}
-
 	c.workqueue.Add(netPolkey)
+
+	// _, netPolExists := c.RawNpMap[netPolkey]
+	// // If a network policy object is not in the RawNpMap, do not need to clean-up states for the network policy
+	// // since netPolController did not apply for any states for the network policy
+	// if !netPolExists {
+	// 	return
+	// }
+	// c.workqueue.Add(netPolkey)
 }
 
 func (c *networkPolicyController) Run(threadiness int, stopCh <-chan struct{}) error {
@@ -253,11 +273,6 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 
 	// Get the network policy resource with this namespace/name
 	netPolObj, err := c.netPolLister.NetworkPolicies(namespace).Get(name)
-
-	// (TODO): is it ok to use Rlock here?
-	c.rawNpMapMutex.RLock()
-	defer c.rawNpMapMutex.RUnlock()
-
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("Network Policy %s is not found, may be it is deleted", key)
@@ -282,6 +297,16 @@ func (c *networkPolicyController) syncNetPol(key string) error {
 		return nil
 	}
 
+	cachedNetPolObj, netPolExists := c.RawNpMap[key]
+	if netPolExists {
+		// if network policy does not have different states against lastly applied states stored in cachedNetPolObj,
+		// netPolController does not need to reconcile this update.
+		// in this updateNetworkPolicy event, newNetPol was updated with states which netPolController does not need to reconcile.
+		if isSameNetworkPolicy(cachedNetPolObj, netPolObj) {
+			return nil
+		}
+	}
+
 	err = c.syncAddAndUpdateNetPol(netPolObj)
 	if err != nil {
 		return fmt.Errorf("[syncNetPol] Error due to  %s\n", err.Error())
@@ -296,13 +321,10 @@ func (c *networkPolicyController) initializeDefaultAzureNpmChain() error {
 		return nil
 	}
 
-	// (TODO): manage it with lock
-	ipsMgr := c.npMgr.IpsMgr
-	iptMgr := c.npMgr.iptMgr
-	if err := ipsMgr.CreateSet(util.KubeSystemFlag, append([]string{util.IpsetNetHashFlag})); err != nil {
+	if err := c.ipsMgr.CreateSet(util.KubeSystemFlag, append([]string{util.IpsetNetHashFlag})); err != nil {
 		return fmt.Errorf("[initializeDefaultAzureNpmChain] Error: failed to initialize kube-system ipset with err %s", err)
 	}
-	if err := iptMgr.InitNpmChains(); err != nil {
+	if err := c.iptMgr.InitNpmChains(); err != nil {
 		return fmt.Errorf("[initializeDefaultAzureNpmChain] Error: failed to initialize azure-npm chains with err %s", err)
 	}
 
@@ -350,45 +372,39 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	// Cache network object first before applying ipsets and iptables.
 	// If error happens while applying ipsets and iptables,
 	// the key is re-queued in workqueue and process this function again, which eventually meets desired states of network policy
-	c.rawNpMapMutex.Lock()
-	defer c.rawNpMapMutex.Unlock()
 	c.RawNpMap[netpolKey] = netPolObj
-
 	metrics.NumPolicies.Inc()
 
 	// (TODO): manage it with lock
-	ipsMgr := c.npMgr.IpsMgr
-	iptMgr := c.npMgr.iptMgr
-
 	sets, namedPorts, lists, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(netPolObj)
 	for _, set := range sets {
 		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
-		if err = ipsMgr.CreateSet(set, append([]string{util.IpsetNetHashFlag})); err != nil {
+		if err = c.ipsMgr.CreateSet(set, append([]string{util.IpsetNetHashFlag})); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset %s with err: %v", set, err)
 		}
 	}
 	for _, set := range namedPorts {
 		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
-		if err = ipsMgr.CreateSet(set, append([]string{util.IpsetIPPortHashFlag})); err != nil {
+		if err = c.ipsMgr.CreateSet(set, append([]string{util.IpsetIPPortHashFlag})); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset named port %s with err: %v", set, err)
 		}
 	}
 	for _, list := range lists {
-		if err = ipsMgr.CreateList(list); err != nil {
+		if err = c.ipsMgr.CreateList(list); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: creating ipset list %s with err: %v", list, err)
 		}
 	}
 
-	if err = c.createCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, ipsMgr); err != nil {
+	if err = c.createCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, c.ipsMgr); err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: createCidrsRule in due to %v", err)
 	}
 
-	if err = c.createCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs, ipsMgr); err != nil {
+	if err = c.createCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs, c.ipsMgr); err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: createCidrsRule out due to %v", err)
 	}
 
 	for _, iptEntry := range iptEntries {
-		if err = iptMgr.Add(iptEntry); err != nil {
+		if err = c.iptMgr.Add(iptEntry); err != nil {
 			return fmt.Errorf("[syncAddAndUpdateNetPol] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
 		}
 	}
@@ -398,10 +414,7 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 
 // DeleteNetworkPolicy handles deleting network policy based on netPolKey.
 func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeCleanUpAzureNpmChain IsSafeCleanUpAzureNpmChain) error {
-	c.rawNpMapMutex.Lock()
-	defer c.rawNpMapMutex.Unlock()
 	cachedNetPolObj, cachedNetPolObjExists := c.RawNpMap[netPolKey]
-
 	// if there is no applied network policy with the netPolKey, do not need to clean up process.
 	if !cachedNetPolObjExists {
 		return nil
@@ -411,23 +424,20 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 	_, _, _, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(cachedNetPolObj)
 
 	var err error
-	iptMgr := c.npMgr.iptMgr
 	// delete iptables entries
 	for _, iptEntry := range iptEntries {
-		if err = iptMgr.Delete(iptEntry); err != nil {
+		if err = c.iptMgr.Delete(iptEntry); err != nil {
 			return fmt.Errorf("[cleanUpNetworkPolicy] Error: failed to apply iptables rule. Rule: %+v with err: %v", iptEntry, err)
 		}
 	}
 
-	// (TODO): manage it with lock
-	ipsMgr := c.npMgr.IpsMgr
 	// delete ipset list related to ingress CIDRs
-	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs, ipsMgr); err != nil {
+	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs, c.ipsMgr); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule in due to %v", err)
 	}
 
 	// delete ipset list related to egress CIDRs
-	if err = c.removeCidrsRule("out", cachedNetPolObj.Name, cachedNetPolObj.Namespace, egressIPCidrs, ipsMgr); err != nil {
+	if err = c.removeCidrsRule("out", cachedNetPolObj.Name, cachedNetPolObj.Namespace, egressIPCidrs, c.ipsMgr); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
@@ -442,7 +452,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 		// Even though UninitNpmChains function returns error, isAzureNpmChainCreated sets up false.
 		// So, when a new network policy is added, the "default Azure NPM chain" can be installed.
 		c.isAzureNpmChainCreated = false
-		if err = iptMgr.UninitNpmChains(); err != nil {
+		if err = c.iptMgr.UninitNpmChains(); err != nil {
 			utilruntime.HandleError(fmt.Errorf("Error: failed to uninitialize azure-npm chains with err: %s", err))
 			return nil
 		}
@@ -451,6 +461,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 	return nil
 }
 
+// (TODO) do not need to ipsMgr parameter
 func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string, ipsMgr *ipsm.IpsetManager) error {
 	spec := append([]string{util.IpsetNetHashFlag, util.IpsetMaxelemName, util.IpsetMaxelemNum})
 
@@ -484,6 +495,7 @@ func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, n
 	return nil
 }
 
+// (TODO) do not need to ipsMgr parameter
 func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string, ipsMgr *ipsm.IpsetManager) error {
 	for i, ipCidrSet := range ipsetEntries {
 		if ipCidrSet == nil || len(ipCidrSet) == 0 {
@@ -497,6 +509,45 @@ func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, n
 	}
 
 	return nil
+}
+
+// reconcileChains checks for ordering of AZURE-NPM chain in FORWARD chain periodically.
+func (c *networkPolicyController) reconcileChains() error {
+	select {
+	case <-time.After(reconcileChainTimeInMinutes * time.Minute):
+		if err := c.iptMgr.CheckAndAddForwardChain(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backup takes snapshots of iptables filter table and saves it periodically.
+func (c *networkPolicyController) restore() {
+	var err error
+	for i := 0; i < restoreMaxRetries; i++ {
+		if err = c.iptMgr.Restore(util.IptablesConfigFile); err == nil {
+			return
+		}
+
+		time.Sleep(restoreRetryWaitTimeInSeconds * time.Second)
+	}
+
+	metrics.SendErrorLogAndMetric(util.NpmID, "Error: timeout restoring Azure-NPM states")
+	// Check this panic
+	panic(err.Error)
+}
+
+// backup takes snapshots of iptables filter table and saves it periodically.
+func (c *networkPolicyController) backup() {
+	var err error
+	for {
+		// (TODO) check backupWaitTimeInSeconds variables
+		time.Sleep(backupWaitTimeInSeconds * time.Second)
+		if err = c.iptMgr.Save(util.IptablesConfigFile); err != nil {
+			metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to back up Azure-NPM states")
+		}
+	}
 }
 
 // GetProcessedNPKey will return netpolKey

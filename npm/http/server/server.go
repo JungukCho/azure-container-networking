@@ -65,13 +65,14 @@ func NewNpmRestServer(listeningAddress string) *NPMRestServer {
 
 func (n *NPMRestServer) GetNpmMgr(npMgr *npm.NetworkPolicyManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// (Question) What information does it need from npMgr? Do we need lock?
-		npMgr.NsMapMutex.Lock()
+		// (Question?) What information does it need from npMgr? Do we need lock?
+		// It looks that this lock is not required
+		// npMgr.Lock()
 		err := json.NewEncoder(w).Encode(npMgr)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		npMgr.NsMapMutex.Unlock()
+		// npMgr.Unlock()
 	})
 }
