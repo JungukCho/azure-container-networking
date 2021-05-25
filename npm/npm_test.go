@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-container-networking/npm/ipsm"
+	"github.com/Azure/azure-container-networking/npm/iptm"
 	"github.com/Azure/azure-container-networking/npm/metrics"
+	"github.com/Azure/azure-container-networking/npm/util"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -38,16 +40,16 @@ func newNPMgr(t *testing.T) *NetworkPolicyManager {
 func TestMain(m *testing.M) {
 	metrics.InitializeAll()
 	// (TODO) since we remove remove all with fake exec, we do not need this
-	// iptMgr := iptm.NewIptablesManager()
-	// iptMgr.Save(util.IptablesConfigFile)
+	iptMgr := iptm.NewIptablesManager()
+	iptMgr.Save(util.IptablesConfigFile)
 
-	// ipsMgr := ipsm.NewIpsetManager()
-	// ipsMgr.Save(util.IpsetConfigFile)
+	ipsMgr := ipsm.NewIpsetManager()
+	ipsMgr.Save(util.IpsetConfigFile)
 
 	exitCode := m.Run()
 
-	// iptMgr.Restore(util.IptablesConfigFile)
-	// ipsMgr.Restore(util.IpsetConfigFile)
+	iptMgr.Restore(util.IptablesConfigFile)
+	ipsMgr.Restore(util.IpsetConfigFile)
 
 	os.Exit(exitCode)
 }

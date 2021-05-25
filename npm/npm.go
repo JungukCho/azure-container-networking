@@ -93,13 +93,12 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 	}
 
 	npMgr := &NetworkPolicyManager{
-		clientset:       clientset,
-		informerFactory: informerFactory,
-		podInformer:     informerFactory.Core().V1().Pods(),
-		nsInformer:      informerFactory.Core().V1().Namespaces(),
-		npInformer:      informerFactory.Networking().V1().NetworkPolicies(),
-		ipsMgr:          ipsm.NewIpsetManager(),
-		// (TODO): make Functions
+		clientset:         clientset,
+		informerFactory:   informerFactory,
+		podInformer:       informerFactory.Core().V1().Pods(),
+		nsInformer:        informerFactory.Core().V1().Namespaces(),
+		npInformer:        informerFactory.Networking().V1().NetworkPolicies(),
+		ipsMgr:            ipsm.NewIpsetManager(),
 		npmNamespaceCache: &npmNamespaceCache{nsMap: make(map[string]*Namespace)},
 		clusterState: telemetry.ClusterState{
 			PodCount:      0,
@@ -119,27 +118,14 @@ func NewNetworkPolicyManager(clientset *kubernetes.Clientset, informerFactory in
 	// create network policy controller
 	npMgr.netPolController = NewNetworkPolicyController(npMgr.npInformer, clientset, npMgr.ipsMgr)
 
-	// It is important to keep the order between iptables and ipset
-	// 1. first initialize iptables
-	npMgr.netPolController.initializeIptables()
+	// (TODO): Need to handle panic if initializing iptables and ipsets are failed?
+	// It is important to keep cleaning-up order between iptables and ipset
+	// 1. clean-up NPM-related iptables information and then running regular processes to keep iptable information
+	npMgr.netPolController.initializeIpTables()
 
-	// (TODO): correct return values
-	// err = npMgr.netPolController.initializeIptables()
-	// if err != nil {
-	// 	klog.Info(err.Error())
-	// 	panic(err.Error())
-	// }
-
-	// 2. then clear out leftover ipsets states
+	// 2. then initialize ipsets states (clean-up existing ipset and then install default ipset)
 	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
-	npMgr.ipsMgr.DestroyNpmIpsets()
-
-	// (TODO): correct return values
-	// err = npMgr.ipsMgr.DestroyNpmIpsets()
-	// if err != nil {
-	// 	klog.Info(err.Error())
-	// 	panic(err.Error())
-	// }
+	npMgr.nameSpaceController.initializeIpSets()
 
 	return npMgr
 }
@@ -202,15 +188,16 @@ func (npMgr *NetworkPolicyManager) SendClusterMetrics() {
 	for {
 		<-heartbeat
 
-		// (TODO): If it needs very accurate metrics, need lock for each one
-		lenOfNsMap := npMgr.nameSpaceController.LengthOfNsMap()
-		nsCount.Value = float64(lenOfNsMap)
+		// Reducing one to remove all-namespaces ns obj
+		// (TODO): Check this is safe or not?
+		lenOfNsMap := len(npMgr.npmNamespaceCache.nsMap)
+		nsCount.Value = float64(lenOfNsMap - 1)
 
-		lenOfRawNpMap := npMgr.netPolController.LengthOfRawNpMap()
+		lenOfRawNpMap := npMgr.netPolController.lengthOfRawNpMap()
 		nwPolicyCount.Value += float64(lenOfRawNpMap)
 
 		podCount.Value = 0
-		lenOfPodMap := npMgr.podController.LengthOfPodMap()
+		lenOfPodMap := npMgr.podController.lengthOfPodMap()
 		podCount.Value += float64(lenOfPodMap)
 
 		metrics.SendMetric(podCount)

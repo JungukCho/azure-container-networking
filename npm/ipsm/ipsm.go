@@ -23,6 +23,10 @@ TODO:
 2. Try to decouple listMap and setMap if possible. At least use different locks for listMap and SetMa
 3. Clean up codes (i.e., just use different functions for "Nethash" and "List" type of IPSet to maintain code better).
 This will also helps to reduce the scope of locks
+4. There are three types of IPSet
+	IpsetSetListFlag    string = "setlist"
+	IpsetNetHashFlag    string = "nethash"
+	IpsetIPPortHashFlag string = "hash:ip,port"
 */
 type ipsEntry struct {
 	operationFlag string
@@ -245,7 +249,6 @@ func (ipsMgr *IpsetManager) deleteSet(setName string) error {
 
 // CreateList creates an ipset list. npm maintains one setlist per namespace label.
 func (ipsMgr *IpsetManager) CreateList(listName string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 	return ipsMgr.createList(listName)
@@ -253,7 +256,6 @@ func (ipsMgr *IpsetManager) CreateList(listName string) error {
 
 // AddToList inserts an ipset to an ipset list.
 func (ipsMgr *IpsetManager) AddToList(listName string, setName string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -305,7 +307,6 @@ func (ipsMgr *IpsetManager) AddToList(listName string, setName string) error {
 
 // DeleteFromList removes an ipset to an ipset list.
 func (ipsMgr *IpsetManager) DeleteFromList(listName string, setName string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -367,7 +368,6 @@ func (ipsMgr *IpsetManager) DeleteFromList(listName string, setName string) erro
 
 // CreateSet creates an ipset.
 func (ipsMgr *IpsetManager) CreateSet(setName string, spec []string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 	return ipsMgr.createSet(setName, spec)
@@ -375,7 +375,6 @@ func (ipsMgr *IpsetManager) CreateSet(setName string, spec []string) error {
 
 // DeleteSet removes a set from ipset.
 func (ipsMgr *IpsetManager) DeleteSet(setName string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 	return ipsMgr.deleteSet(setName)
@@ -383,7 +382,6 @@ func (ipsMgr *IpsetManager) DeleteSet(setName string) error {
 
 // AddToSet inserts an ip to an entry in setMap, and creates/updates the corresponding ipset.
 func (ipsMgr *IpsetManager) AddToSet(setName, ip, spec, podKey string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -450,7 +448,6 @@ func (ipsMgr *IpsetManager) AddToSet(setName, ip, spec, podKey string) error {
 
 // DeleteFromSet removes an ip from an entry in setMap, and delete/update the corresponding ipset.
 func (ipsMgr *IpsetManager) DeleteFromSet(setName, ip, podKey string) error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -512,7 +509,6 @@ func (ipsMgr *IpsetManager) DeleteFromSet(setName, ip, podKey string) error {
 
 // DestroyNpmIpsets destroys only ipsets created by NPM
 func (ipsMgr *IpsetManager) DestroyNpmIpsets() error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -581,8 +577,6 @@ func (ipsMgr *IpsetManager) DestroyNpmIpsets() error {
 	return nil
 }
 
-// only used in UT
-// (TODO): may not need this function since npm will used exec-based UT
 // Save saves ipset to file.
 func (ipsMgr *IpsetManager) Save(configFile string) error {
 	if len(configFile) == 0 {
@@ -599,8 +593,6 @@ func (ipsMgr *IpsetManager) Save(configFile string) error {
 	return nil
 }
 
-// only used in UT
-// (TODO): may not need this function since npm will used exec-based UT
 // Restore restores ipset from file.
 func (ipsMgr *IpsetManager) Restore(configFile string) error {
 	if len(configFile) == 0 {
@@ -633,7 +625,6 @@ func (ipsMgr *IpsetManager) Restore(configFile string) error {
 // not used in any other codes
 // Clean removes all the empty sets & lists under the namespace.
 func (ipsMgr *IpsetManager) Clean() error {
-	// (TODO): Need more fine-grained lock management after understanding how it used from each controller
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 	for setName, set := range ipsMgr.setMap {
