@@ -70,7 +70,7 @@ func (f *nameSpaceFixture) newNsController(stopCh chan struct{}) {
 	for _, ns := range f.nsLister {
 		f.kubeInformer.Core().V1().Namespaces().Informer().GetIndexer().Add(ns)
 	}
-
+	// Do not start informer to avoid unnecessary event triggers
 	//f.kubeInformer.Start()
 }
 

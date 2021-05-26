@@ -67,6 +67,7 @@ func (f *podFixture) newPodController(stopCh chan struct{}) {
 		f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Add(pod)
 	}
 
+	// Do not start informer to avoid unnecessary event triggers
 	//f.kubeInformer.Start(stopCh)
 }
 

@@ -78,6 +78,7 @@ func (f *netPolFixture) newNetPolController(stopCh chan struct{}) {
 		f.kubeInformer.Networking().V1().NetworkPolicies().Informer().GetIndexer().Add(netPol)
 	}
 
+	// Do not start informer to avoid unnecessary event triggers
 	//f.kubeInformer.Start(stopCh)
 }
 
