@@ -58,8 +58,6 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 		iptMgr:                 iptm.NewIptablesManager(),
 	}
 
-	// (TODO):  willl need to return results of these calls - need to panic
-	// Clear out leftover iptables states
 	npInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    netPolController.addNetworkPolicy,
@@ -70,18 +68,15 @@ func NewNetworkPolicyController(npInformer networkinginformers.NetworkPolicyInfo
 	return netPolController
 }
 
-func (c *networkPolicyController) initializeIpTables() error {
+func (c *networkPolicyController) initializeIPTables() error {
 	klog.Infof("Azure-NPM creating, cleaning iptables")
 
-	// (TODO):  return error
 	err := c.iptMgr.UninitNpmChains()
 	if err != nil {
 		return err
 	}
 
-	// (TODO): Check any side effects
-	go c.reconcileChains()
-	go c.backup()
+	c.iptMgr.ReconcileIPTables()
 	return nil
 }
 
@@ -210,7 +205,6 @@ func (c *networkPolicyController) processNextWorkItem() bool {
 		}
 		// Run the syncNetPol, passing it the namespace/name string of the
 		// network policy resource to be synced.
-		// TODO : may consider using "c.queue.AddAfter(key, *requeueAfter)" according to error type later
 		if err := c.syncNetPol(key); err != nil {
 			// Put the item back on the workqueue to handle any transient errors.
 			c.workqueue.AddRateLimited(key)
@@ -345,7 +339,6 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 	c.RawNpMap[netpolKey] = netPolObj
 	metrics.NumPolicies.Inc()
 
-	// (TODO): manage it with lock
 	sets, namedPorts, lists, ingressIPCidrs, egressIPCidrs, iptEntries := translatePolicy(netPolObj)
 	for _, set := range sets {
 		klog.Infof("Creating set: %v, hashedSet: %v", set, util.GetHashedName(set))
@@ -365,11 +358,11 @@ func (c *networkPolicyController) syncAddAndUpdateNetPol(netPolObj *networkingv1
 		}
 	}
 
-	if err = c.createCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs, c.ipsMgr); err != nil {
+	if err = c.createCidrsRule("in", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, ingressIPCidrs); err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: createCidrsRule in due to %v", err)
 	}
 
-	if err = c.createCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs, c.ipsMgr); err != nil {
+	if err = c.createCidrsRule("out", netPolObj.ObjectMeta.Name, netPolObj.ObjectMeta.Namespace, egressIPCidrs); err != nil {
 		return fmt.Errorf("[syncAddAndUpdateNetPol] Error: createCidrsRule out due to %v", err)
 	}
 
@@ -402,12 +395,12 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 	}
 
 	// delete ipset list related to ingress CIDRs
-	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs, c.ipsMgr); err != nil {
+	if err = c.removeCidrsRule("in", cachedNetPolObj.Name, cachedNetPolObj.Namespace, ingressIPCidrs); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule in due to %v", err)
 	}
 
 	// delete ipset list related to egress CIDRs
-	if err = c.removeCidrsRule("out", cachedNetPolObj.Name, cachedNetPolObj.Namespace, egressIPCidrs, c.ipsMgr); err != nil {
+	if err = c.removeCidrsRule("out", cachedNetPolObj.Name, cachedNetPolObj.Namespace, egressIPCidrs); err != nil {
 		return fmt.Errorf("[cleanUpNetworkPolicy] Error: removeCidrsRule out due to %v", err)
 	}
 
@@ -431,8 +424,7 @@ func (c *networkPolicyController) cleanUpNetworkPolicy(netPolKey string, isSafeC
 	return nil
 }
 
-// (TODO) do not need to ipsMgr parameter
-func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string, ipsMgr *ipsm.IpsetManager) error {
+func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string) error {
 	spec := append([]string{util.IpsetNetHashFlag, util.IpsetMaxelemName, util.IpsetMaxelemNum})
 
 	for i, ipCidrSet := range ipsetEntries {
@@ -441,7 +433,7 @@ func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, n
 		}
 		setName := policyName + "-in-ns-" + ns + "-" + strconv.Itoa(i) + ingressOrEgress
 		klog.Infof("Creating set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
-		if err := ipsMgr.CreateSet(setName, spec); err != nil {
+		if err := c.ipsMgr.CreateSet(setName, spec); err != nil {
 			return fmt.Errorf("[createCidrsRule] Error: creating ipset %s with err: %v", ipCidrSet, err)
 		}
 		for _, ipCidrEntry := range util.DropEmptyFields(ipCidrSet) {
@@ -450,12 +442,12 @@ func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, n
 			if ipCidrEntry == "0.0.0.0/0" {
 				splitEntry := [2]string{"1.0.0.0/1", "128.0.0.0/1"}
 				for _, entry := range splitEntry {
-					if err := ipsMgr.AddToSet(setName, entry, util.IpsetNetHashFlag, ""); err != nil {
+					if err := c.ipsMgr.AddToSet(setName, entry, util.IpsetNetHashFlag, ""); err != nil {
 						return fmt.Errorf("[createCidrsRule] adding ip cidrs %s into ipset %s with err: %v", entry, ipCidrSet, err)
 					}
 				}
 			} else {
-				if err := ipsMgr.AddToSet(setName, ipCidrEntry, util.IpsetNetHashFlag, ""); err != nil {
+				if err := c.ipsMgr.AddToSet(setName, ipCidrEntry, util.IpsetNetHashFlag, ""); err != nil {
 					return fmt.Errorf("[createCidrsRule] adding ip cidrs %s into ipset %s with err: %v", ipCidrEntry, ipCidrSet, err)
 				}
 			}
@@ -465,30 +457,18 @@ func (c *networkPolicyController) createCidrsRule(ingressOrEgress, policyName, n
 	return nil
 }
 
-// (TODO) do not need to ipsMgr parameter
-func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string, ipsMgr *ipsm.IpsetManager) error {
+func (c *networkPolicyController) removeCidrsRule(ingressOrEgress, policyName, ns string, ipsetEntries [][]string) error {
 	for i, ipCidrSet := range ipsetEntries {
 		if ipCidrSet == nil || len(ipCidrSet) == 0 {
 			continue
 		}
 		setName := policyName + "-in-ns-" + ns + "-" + strconv.Itoa(i) + ingressOrEgress
 		klog.Infof("Delete set: %v, hashedSet: %v", setName, util.GetHashedName(setName))
-		if err := ipsMgr.DeleteSet(setName); err != nil {
+		if err := c.ipsMgr.DeleteSet(setName); err != nil {
 			return fmt.Errorf("[removeCidrsRule] deleting ipset %s with err: %v", ipCidrSet, err)
 		}
 	}
 
-	return nil
-}
-
-// reconcileChains checks for ordering of AZURE-NPM chain in FORWARD chain periodically.
-func (c *networkPolicyController) reconcileChains() error {
-	select {
-	case <-time.After(reconcileChainTimeInMinutes * time.Minute):
-		if err := c.iptMgr.CheckAndAddForwardChain(); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -506,18 +486,6 @@ func (c *networkPolicyController) restore() {
 	metrics.SendErrorLogAndMetric(util.NpmID, "Error: timeout restoring Azure-NPM states")
 	// Check this panic
 	panic(err.Error)
-}
-
-// backup takes snapshots of iptables filter table and saves it periodically.
-func (c *networkPolicyController) backup() {
-	var err error
-	for {
-		// (TODO) check backupWaitTimeInSeconds variables
-		time.Sleep(backupWaitTimeInSeconds * time.Second)
-		if err = c.iptMgr.Save(util.IptablesConfigFile); err != nil {
-			metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to back up Azure-NPM states")
-		}
-	}
 }
 
 // GetProcessedNPKey will return netpolKey
