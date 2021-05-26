@@ -67,7 +67,7 @@ func (f *podFixture) newPodController(stopCh chan struct{}) {
 		f.kubeInformer.Core().V1().Pods().Informer().GetIndexer().Add(pod)
 	}
 
-	f.kubeInformer.Start(stopCh)
+	//f.kubeInformer.Start(stopCh)
 }
 
 func (f *podFixture) ipSetSave(ipsetConfigFile string) {

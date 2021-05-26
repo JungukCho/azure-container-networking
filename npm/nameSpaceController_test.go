@@ -71,7 +71,7 @@ func (f *nameSpaceFixture) newNsController(stopCh chan struct{}) {
 		f.kubeInformer.Core().V1().Namespaces().Informer().GetIndexer().Add(ns)
 	}
 
-	f.kubeInformer.Start(stopCh)
+	//f.kubeInformer.Start()
 }
 
 func (f *nameSpaceFixture) ipSetSave(ipsetConfigFile string) {

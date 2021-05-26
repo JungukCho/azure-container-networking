@@ -78,7 +78,7 @@ func (f *netPolFixture) newNetPolController(stopCh chan struct{}) {
 		f.kubeInformer.Networking().V1().NetworkPolicies().Informer().GetIndexer().Add(netPol)
 	}
 
-	f.kubeInformer.Start(stopCh)
+	//f.kubeInformer.Start(stopCh)
 }
 
 func (f *netPolFixture) saveIpTables(iptablesConfigFile string) {
