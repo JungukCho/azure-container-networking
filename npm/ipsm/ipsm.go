@@ -17,17 +17,6 @@ import (
 	"github.com/Azure/azure-container-networking/npm/util"
 )
 
-/*
-TODO:
-1. Clarify error codes after running ipset commands and need to use it in a very accurate way
-2. Try to decouple listMap and setMap if possible. At least use different locks for listMap and SetMa
-3. Clean up codes (i.e., just use different functions for "Nethash" and "List" type of IPSet to maintain code better).
-This will also helps to reduce the scope of locks
-4. There are three types of IPSet
-	IpsetSetListFlag    string = "setlist"
-	IpsetNetHashFlag    string = "nethash"
-	IpsetIPPortHashFlag string = "hash:ip,port"
-*/
 type ipsEntry struct {
 	operationFlag string
 	name          string
@@ -508,6 +497,8 @@ func (ipsMgr *IpsetManager) DeleteFromSet(setName, ip, podKey string) error {
 
 // DestroyNpmIpsets destroys only ipsets created by NPM
 func (ipsMgr *IpsetManager) DestroyNpmIpsets() error {
+	log.Logf("Azure-NPM creating, cleaning existing Azure NPM IPSets")
+
 	ipsMgr.Lock()
 	defer ipsMgr.Unlock()
 
@@ -621,7 +612,6 @@ func (ipsMgr *IpsetManager) Restore(configFile string) error {
 	return nil
 }
 
-// not used in any other codes
 // Clean removes all the empty sets & lists under the namespace.
 func (ipsMgr *IpsetManager) Clean() error {
 	ipsMgr.Lock()

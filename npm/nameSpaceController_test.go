@@ -170,7 +170,7 @@ func TestAddNamespace(t *testing.T) {
 	addNamespace(t, f, nsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestAddNamespace", f, testCases)
 
@@ -208,7 +208,7 @@ func TestUpdateNamespace(t *testing.T) {
 	updateNamespace(t, f, oldNsObj, newNsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestUpdateNamespace", f, testCases)
 
@@ -253,7 +253,7 @@ func TestAddNamespaceLabel(t *testing.T) {
 	updateNamespace(t, f, oldNsObj, newNsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestAddNamespaceLabel", f, testCases)
 
@@ -299,7 +299,7 @@ func TestAddNamespaceLabelSameRv(t *testing.T) {
 	updateNamespace(t, f, oldNsObj, newNsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestAddNamespaceLabelSameRv", f, testCases)
 
@@ -347,7 +347,7 @@ func TestDeleteandUpdateNamespaceLabel(t *testing.T) {
 	updateNamespace(t, f, oldNsObj, newNsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestDeleteandUpdateNamespaceLabel", f, testCases)
 
@@ -400,7 +400,7 @@ func TestNewNameSpaceUpdate(t *testing.T) {
 	updateNamespace(t, f, oldNsObj, newNsObj)
 
 	testCases := []expectedNsValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkNsTestResult("TestDeleteandUpdateNamespaceLabel", f, testCases)
 
@@ -437,7 +437,7 @@ func TestDeleteNamespace(t *testing.T) {
 	deleteNamespace(t, f, nsObj, DeletedFinalStateknownObject)
 
 	testCases := []expectedNsValues{
-		{0, 1, 0},
+		{0, 0, 0},
 	}
 	checkNsTestResult("TestDeleteNamespace", f, testCases)
 
@@ -469,7 +469,7 @@ func TestDeleteNamespaceWithTombstone(t *testing.T) {
 	f.nsController.deleteNamespace(tombstone)
 
 	testCases := []expectedNsValues{
-		{0, 1, 0},
+		{0, 0, 1},
 	}
 	checkNsTestResult("TestDeleteNamespaceWithTombstone", f, testCases)
 }
@@ -492,7 +492,7 @@ func TestDeleteNamespaceWithTombstoneAfterAddingNameSpace(t *testing.T) {
 
 	deleteNamespace(t, f, nsObj, DeletedFinalStateUnknownObject)
 	testCases := []expectedNsValues{
-		{0, 1, 0},
+		{0, 0, 0},
 	}
 	checkNsTestResult("TestDeleteNamespaceWithTombstoneAfterAddingNameSpace", f, testCases)
 }

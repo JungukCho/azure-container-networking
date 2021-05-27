@@ -220,7 +220,7 @@ func TestAddMultiplePods(t *testing.T) {
 	addPod(t, f, podObj2)
 
 	testCases := []expectedValues{
-		{2, 2, 0},
+		{2, 1, 0},
 	}
 	checkPodTestResult("TestAddMultiplePods", f, testCases)
 	checkNpmPodWithInput("TestAddMultiplePods", f, podObj1)
@@ -242,7 +242,7 @@ func TestAddPod(t *testing.T) {
 
 	addPod(t, f, podObj)
 	testCases := []expectedValues{
-		{1, 2, 0},
+		{1, 1, 0},
 	}
 	checkPodTestResult("TestAddPod", f, testCases)
 	checkNpmPodWithInput("TestAddPod", f, podObj)
@@ -264,7 +264,7 @@ func TestAddHostNetworkPod(t *testing.T) {
 
 	addPod(t, f, podObj)
 	testCases := []expectedValues{
-		{0, 1, 0},
+		{0, 0, 0},
 	}
 	checkPodTestResult("TestAddHostNetworkPod", f, testCases)
 
@@ -289,7 +289,7 @@ func TestDeletePod(t *testing.T) {
 
 	deletePod(t, f, podObj, DeletedFinalStateknownObject)
 	testCases := []expectedValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkPodTestResult("TestDeletePod", f, testCases)
 	if _, exists := f.podController.podMap[podKey]; exists {
@@ -313,7 +313,7 @@ func TestDeleteHostNetworkPod(t *testing.T) {
 
 	deletePod(t, f, podObj, DeletedFinalStateknownObject)
 	testCases := []expectedValues{
-		{0, 1, 0},
+		{0, 0, 0},
 	}
 	checkPodTestResult("TestDeleteHostNetworkPod", f, testCases)
 	if _, exists := f.podController.podMap[podKey]; exists {
@@ -321,6 +321,7 @@ func TestDeleteHostNetworkPod(t *testing.T) {
 	}
 }
 
+// this UT only tests deletePod event handler function in podController
 func TestDeletePodWithTombstone(t *testing.T) {
 	labels := map[string]string{
 		"app": "test-pod",
@@ -339,7 +340,7 @@ func TestDeletePodWithTombstone(t *testing.T) {
 
 	f.podController.deletePod(tombstone)
 	testCases := []expectedValues{
-		{0, 1, 0},
+		{0, 0, 1},
 	}
 	checkPodTestResult("TestDeletePodWithTombstone", f, testCases)
 }
@@ -359,7 +360,7 @@ func TestDeletePodWithTombstoneAfterAddingPod(t *testing.T) {
 
 	deletePod(t, f, podObj, DeletedFinalStateUnknownObject)
 	testCases := []expectedValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkPodTestResult("TestDeletePodWithTombstoneAfterAddingPod", f, testCases)
 }
@@ -387,7 +388,7 @@ func TestLabelUpdatePod(t *testing.T) {
 	updatePod(t, f, oldPodObj, newPodObj)
 
 	testCases := []expectedValues{
-		{1, 2, 0},
+		{1, 1, 0},
 	}
 	checkPodTestResult("TestLabelUpdatePod", f, testCases)
 	checkNpmPodWithInput("TestLabelUpdatePod", f, newPodObj)
@@ -415,7 +416,7 @@ func TestIPAddressUpdatePod(t *testing.T) {
 	updatePod(t, f, oldPodObj, newPodObj)
 
 	testCases := []expectedValues{
-		{1, 2, 0},
+		{1, 1, 0},
 	}
 	checkPodTestResult("TestIPAddressUpdatePod", f, testCases)
 	checkNpmPodWithInput("TestIPAddressUpdatePod", f, newPodObj)
@@ -445,7 +446,7 @@ func TestPodStatusUpdatePod(t *testing.T) {
 	updatePod(t, f, oldPodObj, newPodObj)
 
 	testCases := []expectedValues{
-		{0, 2, 0},
+		{0, 1, 0},
 	}
 	checkPodTestResult("TestPodStatusUpdatePod", f, testCases)
 	if _, exists := f.podController.podMap[podKey]; exists {
