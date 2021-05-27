@@ -22,6 +22,8 @@ import (
 const (
 	defaultlockWaitTimeInSeconds string = "60"
 	iptablesErrDoesNotExist      int    = 1
+	backupWaitTimeInSeconds             = 60
+	reconcileChainTimeInMinutes         = 5
 )
 
 var (
@@ -62,6 +64,10 @@ func NewIptablesManager() *IptablesManager {
 		OperationFlag: "",
 	}
 
+	// (TODO) Ideally, we only need this when network policy installs iptables
+	// Control below two functions with InitNpmChains and UninitNpmChains functions together
+	go iptMgr.backup()
+	go iptMgr.reconcileChains()
 	return iptMgr
 }
 
@@ -73,7 +79,7 @@ func (iptMgr *IptablesManager) InitNpmChains() error {
 		return err
 	}
 
-	err := iptMgr.CheckAndAddForwardChain()
+	err := iptMgr.checkAndAddForwardChain()
 	if err != nil {
 		metrics.SendErrorLogAndMetric(util.IptmID, "Error: failed to add AZURE-NPM chain to FORWARD chain. %s", err.Error())
 	}
@@ -87,7 +93,6 @@ func (iptMgr *IptablesManager) InitNpmChains() error {
 
 // UninitNpmChains uninitializes Azure NPM chains in iptables.
 func (iptMgr *IptablesManager) UninitNpmChains() error {
-
 	// Remove AZURE-NPM chain from FORWARD chain.
 	entry := &IptEntry{
 		Chain: util.IptablesForwardChain,
@@ -130,8 +135,54 @@ func (iptMgr *IptablesManager) UninitNpmChains() error {
 	return nil
 }
 
-// CheckAndAddForwardChain initializes and reconciles Azure-NPM chain in right order
-func (iptMgr *IptablesManager) CheckAndAddForwardChain() error {
+// Add adds a rule in iptables.
+func (iptMgr *IptablesManager) Add(entry *IptEntry) error {
+	timer := metrics.StartNewTimer()
+
+	log.Logf("Adding iptables entry: %+v.", entry)
+
+	if entry.IsJumpEntry {
+		iptMgr.OperationFlag = util.IptablesAppendFlag
+	} else {
+		iptMgr.OperationFlag = util.IptablesInsertionFlag
+	}
+	if _, err := iptMgr.run(entry); err != nil {
+		metrics.SendErrorLogAndMetric(util.IptmID, "Error: failed to create iptables rules.")
+		return err
+	}
+
+	metrics.NumIPTableRules.Inc()
+	timer.StopAndRecord(metrics.AddIPTableRuleExecTime)
+
+	return nil
+}
+
+// Delete removes a rule in iptables.
+func (iptMgr *IptablesManager) Delete(entry *IptEntry) error {
+	log.Logf("Deleting iptables entry: %+v", entry)
+
+	exists, err := iptMgr.exists(entry)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		return nil
+	}
+
+	iptMgr.OperationFlag = util.IptablesDeletionFlag
+	if _, err := iptMgr.run(entry); err != nil {
+		metrics.SendErrorLogAndMetric(util.IptmID, "Error: failed to delete iptables rules.")
+		return err
+	}
+
+	metrics.NumIPTableRules.Dec()
+
+	return nil
+}
+
+// checkAndAddForwardChain initializes and reconciles Azure-NPM chain in right order
+func (iptMgr *IptablesManager) checkAndAddForwardChain() error {
 
 	// TODO Adding this chain is printing error messages try to clean it up
 	if err := iptMgr.addChain(util.IptablesAzureChain); err != nil {
@@ -210,50 +261,27 @@ func (iptMgr *IptablesManager) CheckAndAddForwardChain() error {
 	return nil
 }
 
-// Add adds a rule in iptables.
-func (iptMgr *IptablesManager) Add(entry *IptEntry) error {
-	timer := metrics.StartNewTimer()
-
-	log.Logf("Adding iptables entry: %+v.", entry)
-
-	if entry.IsJumpEntry {
-		iptMgr.OperationFlag = util.IptablesAppendFlag
-	} else {
-		iptMgr.OperationFlag = util.IptablesInsertionFlag
+// reconcileChains checks for ordering of AZURE-NPM chain in FORWARD chain periodically.
+func (iptMgr *IptablesManager) reconcileChains() error {
+	select {
+	case <-time.After(reconcileChainTimeInMinutes * time.Minute):
+		if err := iptMgr.checkAndAddForwardChain(); err != nil {
+			return err
+		}
 	}
-	if _, err := iptMgr.run(entry); err != nil {
-		metrics.SendErrorLogAndMetric(util.IptmID, "Error: failed to create iptables rules.")
-		return err
-	}
-
-	metrics.NumIPTableRules.Inc()
-	timer.StopAndRecord(metrics.AddIPTableRuleExecTime)
-
 	return nil
 }
 
-// Delete removes a rule in iptables.
-func (iptMgr *IptablesManager) Delete(entry *IptEntry) error {
-	log.Logf("Deleting iptables entry: %+v", entry)
-
-	exists, err := iptMgr.exists(entry)
-	if err != nil {
-		return err
+// backup takes snapshots of iptables filter table and saves it periodically.
+func (iptMgr *IptablesManager) backup() {
+	var err error
+	for {
+		// (TODO) check backupWaitTimeInSeconds variables
+		time.Sleep(backupWaitTimeInSeconds * time.Second)
+		if err = iptMgr.Save(util.IptablesConfigFile); err != nil {
+			metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to back up Azure-NPM states")
+		}
 	}
-
-	if !exists {
-		return nil
-	}
-
-	iptMgr.OperationFlag = util.IptablesDeletionFlag
-	if _, err := iptMgr.run(entry); err != nil {
-		metrics.SendErrorLogAndMetric(util.IptmID, "Error: failed to delete iptables rules.")
-		return err
-	}
-
-	metrics.NumIPTableRules.Dec()
-
-	return nil
 }
 
 // addAllRulesToChains checks and adds all the rules in NPM chains
