@@ -37,18 +37,14 @@ type netPolFixture struct {
 	ipsMgr           *ipsm.IpsetManager
 	netPolController *networkPolicyController
 	kubeInformer     kubeinformers.SharedInformerFactory
-
-	// to test whether unnecessary enqueuing event into workqueue was correctly filtered in eventhandler code of network policy controller
-	isEnqueueEventIntoWorkQueue bool
 }
 
 func newNetPolFixture(t *testing.T, utilexec exec.Interface) *netPolFixture {
 	f := &netPolFixture{
-		t:                           t,
-		netPolLister:                []*networkingv1.NetworkPolicy{},
-		kubeobjects:                 []runtime.Object{},
-		ipsMgr:                      ipsm.NewIpsetManager(utilexec),
-		isEnqueueEventIntoWorkQueue: true,
+		t:            t,
+		netPolLister: []*networkingv1.NetworkPolicy{},
+		kubeobjects:  []runtime.Object{},
+		ipsMgr:       ipsm.NewIpsetManager(utilexec),
 	}
 
 	// While running "make test-all", metrics hold states which was executed in previous unit test.
@@ -153,7 +149,6 @@ func addNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.NetworkPo
 	f.netPolController.addNetworkPolicy(netPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
-		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -178,7 +173,6 @@ func deleteNetPol(t *testing.T, f *netPolFixture, netPolObj *networkingv1.Networ
 	}
 
 	if f.netPolController.workqueue.Len() == 0 {
-		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -194,7 +188,6 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 	f.netPolController.updateNetworkPolicy(oldNetPolObj, netNetPolObj)
 
 	if f.netPolController.workqueue.Len() == 0 {
-		f.isEnqueueEventIntoWorkQueue = false
 		return
 	}
 
@@ -202,12 +195,9 @@ func updateNetPol(t *testing.T, f *netPolFixture, oldNetPolObj, netNetPolObj *ne
 }
 
 type expectedNetPolValues struct {
-	// (TODO): do not check ns map
-	expectedLenOfNsMap                int
-	expectedLenOfRawNpMap             int
-	expectedLenOfWorkQueue            int
-	expectedIsAzureNpmChainCreated    bool
-	expectedEnqueueEventIntoWorkQueue bool
+	expectedLenOfRawNpMap          int
+	expectedLenOfWorkQueue         int
+	expectedIsAzureNpmChainCreated bool
 	// prometheus metrics
 	expectedNumPoliciesMetric                   int
 	expectedNumPoliciesMetricError              error
@@ -217,10 +207,6 @@ type expectedNetPolValues struct {
 
 func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expectedNetPolValues) {
 	for _, test := range testCases {
-		// if got := len(f.npMgr.Network); got != test.expectedLenOfNsMap {
-		// 	f.t.Errorf("npMgr namespace map length = %d, want %d", got, test.expectedLenOfNsMap)
-		// }
-
 		if got := len(f.netPolController.RawNpMap); got != test.expectedLenOfRawNpMap {
 			f.t.Errorf("Raw NetPol Map length = %d, want %d", got, test.expectedLenOfRawNpMap)
 		}
@@ -231,10 +217,6 @@ func checkNetPolTestResult(testName string, f *netPolFixture, testCases []expect
 
 		if got := f.netPolController.isAzureNpmChainCreated; got != test.expectedIsAzureNpmChainCreated {
 			f.t.Errorf("isAzureNpmChainCreated %v, want %v", got, test.expectedIsAzureNpmChainCreated)
-		}
-
-		if got := f.isEnqueueEventIntoWorkQueue; got != test.expectedEnqueueEventIntoWorkQueue {
-			f.t.Errorf("isEnqueueEventIntoWorkQueue %v, want %v", got, test.expectedEnqueueEventIntoWorkQueue)
 		}
 
 		// Check prometheus metrics
@@ -278,7 +260,7 @@ func TestAddMultipleNetworkPolicies(t *testing.T) {
 	addNetPol(t, f, netPolObj2)
 
 	testCases := []expectedNetPolValues{
-		{1, 2, 0, true, true, 2, nil, 2, nil},
+		{2, 0, true, 2, nil, 2, nil},
 	}
 	checkNetPolTestResult("TestAddMultipleNetPols", f, testCases)
 }
@@ -296,7 +278,7 @@ func TestAddNetworkPolicy(t *testing.T) {
 
 	addNetPol(t, f, netPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, true, 1, nil, 1, nil},
+		{1, 0, true, 1, nil, 1, nil},
 	}
 
 	checkNetPolTestResult("TestAddNetPol", f, testCases)
@@ -315,7 +297,7 @@ func TestDeleteNetworkPolicy(t *testing.T) {
 
 	deleteNetPol(t, f, netPolObj, DeletedFinalStateknownObject)
 	testCases := []expectedNetPolValues{
-		{1, 0, 0, false, true, 0, nil, 1, nil},
+		{0, 0, false, 0, nil, 1, nil},
 	}
 	checkNetPolTestResult("TestDelNetPol", f, testCases)
 }
@@ -325,7 +307,6 @@ func TestDeleteNetworkPolicyWithTombstone(t *testing.T) {
 
 	fexec := exec.New()
 	f := newNetPolFixture(t, fexec)
-	f.isEnqueueEventIntoWorkQueue = false
 	f.netPolLister = append(f.netPolLister, netPolObj)
 	f.kubeobjects = append(f.kubeobjects, netPolObj)
 	stopCh := make(chan struct{})
@@ -340,7 +321,7 @@ func TestDeleteNetworkPolicyWithTombstone(t *testing.T) {
 
 	f.netPolController.deleteNetworkPolicy(tombstone)
 	testCases := []expectedNetPolValues{
-		{1, 0, 0, false, false, 0, nil, 0, nil},
+		{0, 1, false, 0, nil, 0, nil},
 	}
 	checkNetPolTestResult("TestDeleteNetworkPolicyWithTombstone", f, testCases)
 }
@@ -358,7 +339,7 @@ func TestDeleteNetworkPolicyWithTombstoneAfterAddingNetworkPolicy(t *testing.T) 
 
 	deleteNetPol(t, f, netPolObj, DeletedFinalStateUnknownObject)
 	testCases := []expectedNetPolValues{
-		{1, 0, 0, false, true, 0, nil, 1, nil},
+		{0, 0, false, 0, nil, 1, nil},
 	}
 	checkNetPolTestResult("TestDeleteNetworkPolicyWithTombstoneAfterAddingNetworkPolicy", f, testCases)
 }
@@ -383,7 +364,7 @@ func TestUpdateNetworkPolicy(t *testing.T) {
 
 	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, false, 1, nil, 1, nil},
+		{1, 0, true, 1, nil, 1, nil},
 	}
 	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
 }
@@ -413,7 +394,7 @@ func TestLabelUpdateNetworkPolicy(t *testing.T) {
 	updateNetPol(t, f, oldNetPolObj, newNetPolObj)
 
 	testCases := []expectedNetPolValues{
-		{1, 1, 0, true, true, 1, nil, 2, nil},
+		{1, 0, true, 1, nil, 2, nil},
 	}
 	checkNetPolTestResult("TestUpdateNetPol", f, testCases)
 }
