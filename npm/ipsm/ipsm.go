@@ -621,7 +621,6 @@ func (ipsMgr *IpsetManager) Restore(configFile string) error {
 	return nil
 }
 
-// not used in any other codes
 // Clean removes all the empty sets & lists under the namespace.
 func (ipsMgr *IpsetManager) Clean() error {
 	ipsMgr.Lock()
