@@ -64,10 +64,6 @@ func NewIptablesManager() *IptablesManager {
 		OperationFlag: "",
 	}
 
-	// (TODO) Ideally, we only need this when network policy installs iptables
-	// Control below two functions with InitNpmChains and UninitNpmChains functions together
-	go iptMgr.backup()
-	go iptMgr.reconcileChains()
 	return iptMgr
 }
 
@@ -179,6 +175,13 @@ func (iptMgr *IptablesManager) Delete(entry *IptEntry) error {
 	metrics.NumIPTableRules.Dec()
 
 	return nil
+}
+
+func (iptMgr *IptablesManager) ReconcileIPTables() {
+	// (TODO) Ideally, we only need this when network policy installs iptables
+	// Control below two functions with InitNpmChains and UninitNpmChains functions together
+	go iptMgr.backup()
+	go iptMgr.reconcileChains()
 }
 
 // checkAndAddForwardChain initializes and reconciles Azure-NPM chain in right order
