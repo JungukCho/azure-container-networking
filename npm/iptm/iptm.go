@@ -177,9 +177,9 @@ func (iptMgr *IptablesManager) Delete(entry *IptEntry) error {
 	return nil
 }
 
+// TODO(jungukcho): Ideally, NPM only needs to run below functions when at least one network policy resource is submitted.
+// Need to fine-grained control below two functions according to status of network policy resources
 func (iptMgr *IptablesManager) ReconcileIPTables() {
-	// (TODO) Ideally, we only need this when network policy installs iptables
-	// Control below two functions with InitNpmChains and UninitNpmChains functions together
 	go iptMgr.backup()
 	go iptMgr.reconcileChains()
 }
@@ -279,7 +279,6 @@ func (iptMgr *IptablesManager) reconcileChains() error {
 func (iptMgr *IptablesManager) backup() {
 	var err error
 	for {
-		// (TODO) check backupWaitTimeInSeconds variables
 		time.Sleep(backupWaitTimeInSeconds * time.Second)
 		if err = iptMgr.Save(util.IptablesConfigFile); err != nil {
 			metrics.SendErrorLogAndMetric(util.NpmID, "Error: failed to back up Azure-NPM states")
