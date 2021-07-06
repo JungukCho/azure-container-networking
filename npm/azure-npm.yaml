@@ -81,6 +81,7 @@ spec:
       containers:
         - name: azure-npm
           image: mcr.microsoft.com/containernetworking/azure-npm:v1.3.1
+          imagePullPolicy: IfNotPresent
           resources:
             limits:
               cpu: 250m

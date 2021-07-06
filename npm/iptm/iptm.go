@@ -312,7 +312,8 @@ func (iptMgr *IptablesManager) GetChainLineNumber(chain string, parentChain stri
 		err    error
 	)
 
-	cmdName := util.Iptables
+	//cmdName := util.Iptables
+	cmdName := util.Ip6tables
 	cmdArgs := []string{"-t", "filter", "-n", "--list", parentChain, "--line-numbers"}
 
 	iptFilterEntries := exec.Command(cmdName, cmdArgs...)
@@ -413,8 +414,13 @@ func (iptMgr *IptablesManager) Delete(entry *IptEntry) error {
 // Run execute an iptables command to update iptables.
 func (iptMgr *IptablesManager) Run(entry *IptEntry) (int, error) {
 	cmdName := entry.Command
-	if cmdName == "" {
-		cmdName = util.Iptables
+	// if cmdName == "" {
+	// 	cmdName = util.Iptables
+	// }
+
+	// (TODO) Nedd to clean up the code
+	if cmdName == "" || cmdName == util.Iptables {
+		cmdName = util.Ip6tables
 	}
 
 	if entry.LockWaitTimeInSeconds == "" {
@@ -427,6 +433,7 @@ func (iptMgr *IptablesManager) Run(entry *IptEntry) (int, error) {
 		log.Logf("Executing iptables command %s %v", cmdName, cmdArgs)
 	}
 
+	log.Logf("Executing iptables command %s %v", cmdName, cmdArgs)
 	_, err := exec.Command(cmdName, cmdArgs...).Output()
 	if msg, failed := err.(*exec.ExitError); failed {
 		errCode := msg.Sys().(syscall.WaitStatus).ExitStatus()
