@@ -293,7 +293,7 @@ func (ipsMgr *IpsetManager) CreateSet(setName string, spec []string) error {
 		operationFlag: util.IpsetCreationFlag,
 		// Use hashed string for set name to avoid string length limit of ipset.
 		set:  util.GetHashedName(setName),
-		spec: spec,
+		spec: append(spec, []string{"--family", "inet6"}...),
 	}
 	log.Logf("Creating Set: %+v", entry)
 	// (TODO): need to differentiate errCode handler
