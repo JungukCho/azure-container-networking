@@ -80,7 +80,11 @@ spec:
 
       containers:
         - name: azure-npm
+<<<<<<< HEAD
           image: mcr.microsoft.com/containernetworking/azure-npm:v1.4.1
+=======
+          image: mcr.microsoft.com/containernetworking/azure-npm:v1.3.1
+>>>>>>> 62fbb430ef577810d6cb2c84c5a2019c7f3af59a
           imagePullPolicy: IfNotPresent
           resources:
             limits:
