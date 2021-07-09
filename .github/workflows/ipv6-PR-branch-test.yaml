@@ -59,11 +59,7 @@ jobs:
 
       - name: Install Azure NPM
         run: |
-<<<<<<< HEAD
           sed -i "s/mcr.microsoft.com\/containernetworking\/azure-npm:v1.4.1/acnpublic.azurecr.io\/azure-npm:${NPM_IMAGE_NAME}/" ./npm/azure-npm.yaml 
-=======
-          sed -i "s/mcr.microsoft.com\/containernetworking\/azure-npm:v1.3.1/acnpublic.azurecr.io\/azure-npm:${NPM_IMAGE_NAME}/" ./npm/azure-npm.yaml 
->>>>>>> 62fbb430ef577810d6cb2c84c5a2019c7f3af59a
           sed -i "s/imagePullPolicy: IfNotPresent/imagePullPolicy: Never/" ./npm/azure-npm.yaml
           kind load docker-image acnpublic.azurecr.io/azure-npm:${NPM_IMAGE_NAME} --name ${KIND_CLUSTER_NAME}
           kubectl apply -f ./npm/azure-npm.yaml
